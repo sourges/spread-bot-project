@@ -1,5 +1,6 @@
 import time
 from telegram import Bot
+import asyncio
 
 class SpreadBot:
     def __init__(self, exchange, pair, buy_price, sell_price, amount, 
@@ -166,8 +167,22 @@ class SpreadBot:
     def send_alert(self, message):
         """Send message to Telegram and print to console"""
         try:
-            self.telegram_bot.send_message(chat_id=self.chat_id, text=message)
+            # Runs the async send_message coroutine inside a synchronous method
+            asyncio.run(
+                self.telegram_bot.send_message(
+                    chat_id=self.chat_id, text=message
+                )
+            )
             print(f"[TELEGRAM] {message}")
         except Exception as e:
             print(f"Telegram error: {e}")
             print(f"Message: {message}")
+
+    # def send_alert(self, message):
+    #     """Send message to Telegram and print to console"""
+    #     try:
+    #         self.telegram_bot.send_message(chat_id=self.chat_id, text=message)
+    #         print(f"[TELEGRAM] {message}")
+    #     except Exception as e:
+    #         print(f"Telegram error: {e}")
+    #         print(f"Message: {message}")
