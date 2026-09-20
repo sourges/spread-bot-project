@@ -6,9 +6,6 @@ class SpreadBot:
                  telegram_token, chat_id, check_interval=60):
         """
         Initialize the spread bot
-        
-        Note: __init__ does NOT need to be async - it just sets up data
-        Async is only for functions that WAIT for something
         """
         self.exchange = exchange
         self.pair = pair
@@ -27,8 +24,6 @@ class SpreadBot:
     async def place_buy_order(self):
         """
         Place a buy order at self.buy_price
-        
-        WHY async? - We call await self.send_alert() inside
         """
         try:
             order = self.exchange.create_limit_buy_order(
@@ -50,8 +45,6 @@ class SpreadBot:
     async def check_buy_filled(self):
         """
         Check if buy order has been filled
-        
-        WHY async? - Calls await self.send_alert()
         
         FIXED: Fallback for average field (sometimes None from CCXT)
         """
@@ -80,8 +73,6 @@ class SpreadBot:
     async def place_sell_order(self):
         """
         Place a sell order at self.sell_price
-        
-        WHY async? - Calls await self.send_alert()
         """
         try:
             order = self.exchange.create_limit_sell_order(
@@ -102,8 +93,6 @@ class SpreadBot:
     async def check_sell_filled(self):
         """
         Check if sell order has been filled
-        
-        WHY async? - Calls await self.send_alert()
         
         FIXED: Fallback for average field (sometimes None from CCXT)
         """
@@ -140,11 +129,6 @@ class SpreadBot:
     async def run_cycle(self):
         """
         Execute one complete buy-sell cycle
-        
-        WHY async?
-        - We use await asyncio.sleep() instead of time.sleep()
-        - This is the MAGIC of async: while we sleep, we don't block
-        - If running multiple bots, they could run during this sleep
         """
         print(f"\n{'='*50}")
         print(f"Starting new cycle (Total trades: {self.total_trades})")
@@ -178,10 +162,6 @@ class SpreadBot:
     async def run_continuous(self):
         """
         Run the bot continuously
-        
-        WHY async?
-        - Calls await self.run_cycle()
-        - The entire bot loop is async
         """
         cycle_count = 0
         try:
@@ -197,12 +177,7 @@ class SpreadBot:
     
     async def send_alert(self, message):
         """
-        Send message to Telegram
-        
-        WHY async?
-        - Telegram API call is asynchronous (takes time over the network)
-        - Using async/await means other code can run while waiting
-        - Much cleaner than: asyncio.run(telegram_call)
+        Send message to Telegra
         """
         try:
             # Direct await - clean and simple!
