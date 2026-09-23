@@ -14,7 +14,7 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
 async def main():
-    """Main async function - standard pattern for async Python"""
+    """Main async function"""
     
     print("="*50)
     print("SPREAD BOT INITIALIZING")
