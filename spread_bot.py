@@ -1,6 +1,12 @@
 import asyncio
 from telegram import Bot
 
+
+class OrderProblem(Exception):
+    """Raised when an order is cancelled/expired/rejected, or can't be placed.
+    The bot stops and tells you, instead of waiting forever."""
+
+
 class SpreadBot:
     def __init__(self, exchange, pair, buy_price, sell_price, amount, 
                  telegram_token, chat_id, check_interval=60):
@@ -63,9 +69,15 @@ class SpreadBot:
                 await self.send_alert(message)
                 print(f"Buy order filled at {avg_price}")
                 return True
+            elif order['status'] in ('canceled', 'expired', 'rejected'):
+                # The order is dead and will never fill. Stop instead of waiting forever.
+                raise OrderProblem(f"Buy order {self.buy_order_id} was {order['status']}.")
             else:
                 print(f"Buy order still open... Status: {order['status']}")
                 return False
+        except OrderProblem:
+            # Let this one pass through so run_continuous can stop the bot.
+            raise
         except Exception as e:
             print(f"Error checking buy order: {e}")
             return False
@@ -119,12 +131,33 @@ class SpreadBot:
                 await self.send_alert(message)
                 print(f"Sell order filled at {avg_price}. Profit: ${profit:.4f}")
                 return True
+            elif order['status'] in ('canceled', 'expired', 'rejected'):
+                # The order is dead and will never fill. Stop instead of waiting forever.
+                raise OrderProblem(f"Sell order {self.sell_order_id} was {order['status']}.")
             else:
                 print(f"Sell order still open... Status: {order['status']}")
                 return False
+        except OrderProblem:
+            # Let this one pass through so run_continuous can stop the bot.
+            raise
         except Exception as e:
             print(f"Error checking sell order: {e}")
             return False
+    
+    async def place_with_retries(self, place_func, what, max_attempts=5):
+        """
+        Try to place an order up to max_attempts times.
+        place_func is place_buy_order or place_sell_order; they return None on failure.
+        If every attempt fails, raise OrderProblem so the bot stops and tells you.
+        """
+        for attempt in range(1, max_attempts + 1):
+            order = await place_func()
+            if order is not None:
+                return order
+            if attempt < max_attempts:
+                print(f"{what} failed (attempt {attempt}/{max_attempts}). Retrying in {self.check_interval}s...")
+                await asyncio.sleep(self.check_interval)
+        raise OrderProblem(f"Could not place the {what} after {max_attempts} attempts.")
     
     async def run_cycle(self):
         """
@@ -134,8 +167,8 @@ class SpreadBot:
         print(f"Starting new cycle (Total trades: {self.total_trades})")
         print(f"{'='*50}")
         
-        # Place buy order
-        await self.place_buy_order()
+        # Place buy order (retries a few times; stops the bot if it never works)
+        await self.place_with_retries(self.place_buy_order, "buy order")
         
         # Wait for buy to fill
         print(f"Waiting for buy to fill (checking every {self.check_interval}s)...")
@@ -145,9 +178,9 @@ class SpreadBot:
             # await asyncio.sleep(60) = Non-blocking. Other async tasks can run!
             await asyncio.sleep(self.check_interval)
         
-        # Buy filled, place sell
+        # Buy filled, place sell (you now hold the coins, so this must not silently fail)
         print("Buy filled! Placing sell order...")
-        await self.place_sell_order()
+        await self.place_with_retries(self.place_sell_order, "sell order")
         
         # Wait for sell to fill
         print(f"Waiting for sell to fill (checking every {self.check_interval}s)...")
@@ -169,15 +202,21 @@ class SpreadBot:
                 cycle_count += 1
                 await self.run_cycle()
                 print(f"Waiting for next opportunity... (Completed {cycle_count} cycles)")
-        except KeyboardInterrupt:
-            # User pressed Ctrl+C
+        except OrderProblem as e:
+            # An order failed or was cancelled. Tell the user and stop.
+            message = f"🛑 BOT STOPPED - order problem\n{e}\nCheck Kraken (open orders and balances) before restarting."
+            await self.send_alert(message)
+            print(f"\n{message}")
+        except asyncio.CancelledError:
+            # Ctrl+C: asyncio.run() cancels the running task, which lands here.
             final_message = f"⏹️ BOT STOPPED\nTotal cycles: {cycle_count}\nTotal profit: ${self.total_profit:.4f}"
             await self.send_alert(final_message)
             print(f"\n{final_message}")
+            raise  # re-raise so the program can exit cleanly
     
     async def send_alert(self, message):
         """
-        Send message to Telegra
+        Send message to Telegram
         """
         try:
             # Direct await - clean and simple!
