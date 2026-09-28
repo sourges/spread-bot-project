@@ -1,7 +1,7 @@
 import asyncio
 from telegram import Bot
 from log_trade import log_trade
-from state import save_state
+from state import save_state, load_state
 
 
 class OrderProblem(Exception):
@@ -171,29 +171,44 @@ class SpreadBot:
                 print(f"{what} failed (attempt {attempt}/{max_attempts}). Retrying in {self.check_interval}s...")
                 await asyncio.sleep(self.check_interval)
         raise OrderProblem(f"Could not place the {what} after {max_attempts} attempts.")
+
+    async def recover(self):
+        existing_trade = load_state()
+        if existing_trade is None:
+            return
+        if existing_trade['waiting_for'] == 'buy':
+            self.buy_order_id = existing_trade['order_id']
+            message = f"🔄 BOT RESTARTED - recovered buy order {self.buy_order_id}."
+            await self.send_alert(message)
+        elif existing_trade['waiting_for'] == 'sell':
+            self.sell_order_id = existing_trade['order_id']
+            message = f"🔄 BOT RESTARTED - recovered sell order {self.sell_order_id}."
+            await self.send_alert(message)
     
     async def run_cycle(self):
         """
         Execute one complete buy-sell cycle
         """
-        print(f"\n{'='*50}")
-        print(f"Starting new cycle (Total trades: {self.total_trades})")
-        print(f"{'='*50}")
-        
-        # Place buy order (retries a few times; stops the bot if it never works)
-        await self.place_with_retries(self.place_buy_order, "buy order")
-        
-        # Wait for buy to fill
-        print(f"Waiting for buy to fill (checking every {self.check_interval}s)...")
-        while not await self.check_buy_filled():
-            # KEY: await asyncio.sleep() instead of time.sleep()
-            # time.sleep(60) = BLOCKS everything for 60 sec
-            # await asyncio.sleep(60) = Non-blocking. Other async tasks can run!
-            await asyncio.sleep(self.check_interval)
-        
-        # Buy filled, place sell (you now hold the coins, so this must not silently fail)
-        print("Buy filled! Placing sell order...")
-        await self.place_with_retries(self.place_sell_order, "sell order")
+        if self.sell_order_id is None:
+            if self.buy_order_id is None:
+                print(f"\n{'='*50}")
+                print(f"Starting new cycle (Total trades: {self.total_trades})")
+                print(f"{'='*50}")
+                
+                # Place buy order (retries a few times; stops the bot if it never works)
+                await self.place_with_retries(self.place_buy_order, "buy order")
+
+            # Wait for buy to fill
+            print(f"Waiting for buy to fill (checking every {self.check_interval}s)...")
+            while not await self.check_buy_filled():
+                # KEY: await asyncio.sleep() instead of time.sleep()
+                # time.sleep(60) = BLOCKS everything for 60 sec
+                # await asyncio.sleep(60) = Non-blocking. Other async tasks can run!
+                await asyncio.sleep(self.check_interval)
+            
+            # Buy filled, place sell (you now hold the coins, so this must not silently fail)
+            print("Buy filled! Placing sell order...")
+            await self.place_with_retries(self.place_sell_order, "sell order")
         
         # Wait for sell to fill
         print(f"Waiting for sell to fill (checking every {self.check_interval}s)...")
@@ -211,6 +226,9 @@ class SpreadBot:
         """
         Run the bot continuously
         """
+
+        await self.recover()
+
         cycle_count = 0
         try:
             while True:
