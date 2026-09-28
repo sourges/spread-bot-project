@@ -1,5 +1,6 @@
 import asyncio
 from telegram import Bot
+from log_trade import log_trade
 
 
 class OrderProblem(Exception):
@@ -65,7 +66,10 @@ class SpreadBot:
                 avg_price = order.get('average') or order.get('price') or self.buy_price
                 filled_amount = order['filled']
                 message = f"✅ BUY FILLED!\nFilled: {filled_amount} {self.pair.split('/')[0]}\nAverage price: ${avg_price}\nNow placing SELL order at ${self.sell_price}..."
-                
+
+                # save trade to log
+                log_trade('buy', avg_price, filled_amount, self.buy_order_id)
+
                 await self.send_alert(message)
                 print(f"Buy order filled at {avg_price}")
                 return True
@@ -126,6 +130,9 @@ class SpreadBot:
                 
                 self.total_profit += profit
                 self.total_trades += 1
+
+                # save trade to log
+                log_trade('sell', avg_price, filled_amount, self.sell_order_id)
                 
                 message = f"✅ SELL FILLED!\nSold: {filled_amount} {self.pair.split('/')[0]}\nAverage price: ${avg_price}\n💰 Profit: ${profit:.4f}\n📊 Total: {self.total_trades} trades | ${self.total_profit:.4f}"
                 await self.send_alert(message)
