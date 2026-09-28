@@ -1,6 +1,7 @@
 import asyncio
 from telegram import Bot
 from log_trade import log_trade
+from state import save_state
 
 
 class OrderProblem(Exception):
@@ -39,15 +40,17 @@ class SpreadBot:
                 self.buy_price
             )
             self.buy_order_id = order['id']
-            message = f"🟢 BUY ORDER PLACED\nBuy {self.amount} {self.pair.split('/')[0]} at ${self.buy_price}"
             
-            await self.send_alert(message)
-            return order
         except Exception as e:
             error_message = f"❌ BUY FAILED: {str(e)}"
             await self.send_alert(error_message)
             print(error_message)
             return None
+
+        save_state('buy', self.buy_order_id)
+        message = f"🟢 BUY ORDER PLACED\nBuy {self.amount} {self.pair.split('/')[0]} at ${self.buy_price}"
+        await self.send_alert(message)
+        return order
     
     async def check_buy_filled(self):
         """
@@ -97,14 +100,17 @@ class SpreadBot:
                 self.sell_price
             )
             self.sell_order_id = order['id']
-            message = f"🔴 SELL ORDER PLACED\nSell {self.amount} {self.pair.split('/')[0]} at ${self.sell_price}"
-            await self.send_alert(message)
-            return order
+            
         except Exception as e:
             error_message = f"❌ SELL FAILED: {str(e)}"
             await self.send_alert(error_message)
             print(error_message)
             return None
+
+        save_state('sell', self.sell_order_id)
+        message = f"🔴 SELL ORDER PLACED\nSell {self.amount} {self.pair.split('/')[0]} at ${self.sell_price}"
+        await self.send_alert(message)
+        return order
     
     async def check_sell_filled(self):
         """
@@ -198,6 +204,8 @@ class SpreadBot:
         print("Cycle complete!")
         self.buy_order_id = None
         self.sell_order_id = None
+
+        save_state(None, None)
     
     async def run_continuous(self):
         """
