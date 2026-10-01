@@ -7,8 +7,18 @@ def grid_levels(lower, upper, num_levels):
     levels = [round(lower + i * step, 4) for i in range(num_levels)]
     return levels
 
-
+def split_levels(levels, current_price):
+    buys = []
+    sells = []
+    for level in levels:
+        if level < current_price:
+            buys.append(level)
+        elif level > current_price:
+            sells.append(level)
+    return {'buys': buys, 'sells': sells}
          
 
-answer = grid_levels(0.9990, 1.0010, 5)
-print(answer)
+levels = grid_levels(0.9990, 1.0010, 5)
+orders = split_levels(levels, 0.99)
+print(levels)
+print(orders)
