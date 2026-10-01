@@ -1,5 +1,5 @@
 import unittest
-from grid import grid_levels, split_levels
+from grid import grid_levels, split_levels, centered_grid
 
 class LevelTest(unittest.TestCase):
     def test_five_levels(self):
@@ -35,6 +35,24 @@ class LevelTest(unittest.TestCase):
         result = split_levels(levels, 0.99)
         expected = {'buys': [], 'sells': [0.999, 0.9995, 1.0, 1.0005, 1.001]}
         self.assertEqual(result, expected)
+
+    def test_centered_grid(self):
+        result = centered_grid(1, 0.0005, 2)
+        expected = [0.999, 0.9995, 1.0, 1.0005, 1.001]
+        self.assertEqual(result, expected)
+
+    def test_centered_middle(self):
+        result = centered_grid(1, 0.0005, 10)
+        expected = 1.0
+        self.assertEqual(result[10], expected)
+        self.assertEqual(len(result), 21)
+
+    def test_centered_grid_gives_10_buys_10_sells(self):
+        levels = centered_grid(1.0, 0.0002, levels_per_side=10)
+        result = split_levels(levels, 1.0)
+        self.assertEqual(len(result['buys']), 10)
+        self.assertEqual(len(result['sells']), 10)
+
 
 
 if __name__ == '__main__':
