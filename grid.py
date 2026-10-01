@@ -16,9 +16,18 @@ def split_levels(levels, current_price):
         elif level > current_price:
             sells.append(level)
     return {'buys': buys, 'sells': sells}
-         
 
-levels = grid_levels(0.9990, 1.0010, 5)
-orders = split_levels(levels, 0.99)
-print(levels)
-print(orders)
+def centered_grid(current_price, step, levels_per_side):
+    current_price = round(current_price, 4)
+    lower = current_price - (step * levels_per_side)
+    upper = current_price + (step * levels_per_side)
+    total_levels = levels_per_side * 2 + 1
+    levels = grid_levels(lower, upper, total_levels)
+    return levels
+         
+if __name__ == '__main__':
+    current_price = round(1, 4)
+    levels = centered_grid(current_price, 0.0002, 10)
+    answer = split_levels(levels, current_price)
+    print(answer)
+
