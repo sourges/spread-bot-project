@@ -37,21 +37,27 @@ class LevelTest(unittest.TestCase):
         self.assertEqual(result, expected)
 
     def test_centered_grid(self):
-        result = centered_grid(1, 0.0005, 2)
+        result = centered_grid(1, 0.05, 2)
         expected = [0.999, 0.9995, 1.0, 1.0005, 1.001]
         self.assertEqual(result, expected)
 
     def test_centered_middle(self):
-        result = centered_grid(1, 0.0005, 10)
+        result = centered_grid(1, 0.05, 10)
         expected = 1.0
         self.assertEqual(result[10], expected)
         self.assertEqual(len(result), 21)
 
     def test_centered_grid_gives_10_buys_10_sells(self):
-        levels = centered_grid(1.0, 0.0002, levels_per_side=10)
+        levels = centered_grid(1.0, 0.02, levels_per_side=10)
         result = split_levels(levels, 1.0)
         self.assertEqual(len(result['buys']), 10)
         self.assertEqual(len(result['sells']), 10)
+
+    def test_cake(self):
+        levels = centered_grid(2.593, 1, levels_per_side=10, decimals=3)
+        expected = 2.593
+        self.assertEqual(len(levels), 21)
+        self.assertEqual(levels[10], expected)
 
 
 
