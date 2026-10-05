@@ -1,5 +1,5 @@
 import unittest
-from grid import grid_levels, split_levels, centered_grid
+from grid import grid_levels, split_levels, centered_grid, tick_to_decimals
 
 class LevelTest(unittest.TestCase):
     def test_five_levels(self):
@@ -59,7 +59,21 @@ class LevelTest(unittest.TestCase):
         self.assertEqual(len(levels), 21)
         self.assertEqual(levels[10], expected)
 
+    def test_decimal_three(self):
+        result = tick_to_decimals(0.001)
+        self.assertEqual(result, 3)
 
+    def test_decimal_five(self):
+        result = tick_to_decimals(1e-05)
+        self.assertEqual(result, 5)
+
+    def test_decimal_four(self):
+        result = tick_to_decimals(0.0001)
+        self.assertEqual(result, 4)
+
+    def test_decimal_zero(self):
+        result = tick_to_decimals(1)
+        self.assertEqual(result, 0)
 
 if __name__ == '__main__':
     unittest.main()
