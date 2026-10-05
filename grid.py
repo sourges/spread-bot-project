@@ -1,3 +1,5 @@
+import math
+
 def grid_levels(lower, upper, num_levels, decimals=4):
     """ Return num_levels evenly spaced prices from lower to upper, rounded to 4 decimals """
     if num_levels < 2:
@@ -25,6 +27,9 @@ def centered_grid(current_price, step_percent, levels_per_side, decimals=4):
     total_levels = levels_per_side * 2 + 1
     levels = grid_levels(lower, upper, total_levels, decimals = decimals)
     return levels
+
+def tick_to_decimals(tick):
+    return round(-math.log10(tick))
          
 if __name__ == '__main__':
     current_price = round(1, 4)
