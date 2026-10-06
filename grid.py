@@ -38,7 +38,50 @@ def geometric_levels(lower, upper, num_levels, decimals=4):
     ratio = (upper / lower) ** (1 / (num_levels - 1))
     levels = [round(lower * ratio ** i, decimals) for i in range(num_levels)]
     return levels
-         
+
+def free_levels_below(levels, current_price, trades, count=2):
+    """Return up to `count` grid levels below current_price where buy
+    orders should be, nearest first. Levels used by trades whose entry
+    has already filled are skipped."""
+
+    # Step 1: collect prices already in use by FILLED trades
+    taken = []
+    for trade in trades:
+        if trade['status'] == 'entry_open':
+            continue                      # a live, unfilled buy doesn't block its own level
+        taken.append(trade['entry_price'])
+        taken.append(trade['exit_price'])
+
+    # Step 2: walk the grid from the top down, keeping free levels below the price
+    free = []
+    for level in reversed(levels):
+        if level >= current_price:
+            continue                      # at or above the price, not a buy level
+        if level in taken:
+            continue                      # in use by a filled trade
+        free.append(level)
+        if len(free) == count:
+            return free                   # found enough, stop early
+
+    return free                           # fewer than `count` found (bottom of grid)
+
+# def free_levels_below(levels, current_price, trades, count=2):
+#     taken = []
+#     for trade in trades:
+#         taken.append(trade['entry_price'])
+#         taken.append(trade['exit_price'])
+#     free = []
+#     for level in reversed(levels):
+#         if level >= current_price:
+#             continue
+#         if level in taken:
+#             continue
+#         free.append(level)
+#         if len(free) == count:
+#             return free
+#     return free
+
+
 if __name__ == '__main__':
     current_price = round(1, 4)
     levels = centered_grid(current_price, 0.02, 10)
