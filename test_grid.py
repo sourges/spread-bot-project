@@ -1,5 +1,5 @@
 import unittest
-from grid import grid_levels, split_levels, centered_grid, tick_to_decimals, geometric_levels
+from grid import grid_levels, split_levels, centered_grid, tick_to_decimals, geometric_levels, free_levels_below
 
 class LevelTest(unittest.TestCase):
     def test_five_levels(self):
@@ -89,6 +89,38 @@ class LevelTest(unittest.TestCase):
         last_level = result[-1]
         self.assertEqual(last_level, 1.1442)
         self.assertAlmostEqual(result[1] / result[0], 1.0301, places=3)
+
+    def test_live_buy_does_not_block_level(self):
+            levels = [0.32829, 0.33818, 0.34835, 0.35884, 0.36964, 0.38077]
+            current_price = 0.3795
+            expected = [0.35884, 0.34835]
+            trades = [{'status': 'exit_open',  'entry_price': 0.36964, 'exit_price': 0.38077},
+            {'status': 'entry_open', 'entry_price': 0.35884, 'exit_price': 0.36964}]
+            result = free_levels_below(levels, current_price, trades, count=2)
+            self.assertEqual(result, expected)
+    
+    def test_free_levels_below(self):
+        levels = [0.32829, 0.33818, 0.34835, 0.35884, 0.36964, 0.38077]
+        current_price = 0.3795
+        expected = [0.35884, 0.34835]
+        trades = [{'status': 'exit_open', 'entry_price': 0.36964, 'exit_price': 0.38077}]
+        result = free_levels_below(levels, current_price, trades, count=2)
+        self.assertEqual(result, expected)
+
+
+    def test_empty_trades(self):
+        trades = []
+        expected = [0.36964, 0.35884]
+        levels = [0.32829, 0.33818, 0.34835, 0.35884, 0.36964, 0.38077]
+        result = free_levels_below(levels, 0.3795, trades, count=2)
+        self.assertEqual(expected, result)
+
+    def test_bottom_of_grid(self):
+        levels = [0.32829, 0.33818, 0.34835, 0.35884, 0.36964, 0.38077]
+        trades = []
+        expected = [0.32829]
+        result = free_levels_below(levels, 0.33, trades, count=2)
+        self.assertEqual(expected, result)
 
 if __name__ == '__main__':
     unittest.main()
