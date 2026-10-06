@@ -30,6 +30,14 @@ def centered_grid(current_price, step_percent, levels_per_side, decimals=4):
 
 def tick_to_decimals(tick):
     return round(-math.log10(tick))
+
+def geometric_levels(lower, upper, num_levels, decimals=4):
+    """ return geometric levels """
+    if num_levels < 2:
+        raise ValueError("Grid needs at least 2 levels.")
+    ratio = (upper / lower) ** (1 / (num_levels - 1))
+    levels = [round(lower * ratio ** i, decimals) for i in range(num_levels)]
+    return levels
          
 if __name__ == '__main__':
     current_price = round(1, 4)
