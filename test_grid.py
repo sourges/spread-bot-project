@@ -1,5 +1,5 @@
 import unittest
-from grid import grid_levels, split_levels, centered_grid, tick_to_decimals, geometric_levels, free_levels_below, free_levels_above
+from grid import grid_levels, split_levels, centered_grid, tick_to_decimals, geometric_levels, free_levels_below, free_levels_above, exit_order
 
 class LevelTest(unittest.TestCase):
     def test_five_levels(self):
@@ -152,6 +152,27 @@ class LevelTest(unittest.TestCase):
         expected = [0.35884, 0.36964]
         result = free_levels_above(levels, current_price, trades, count=2)
         self.assertEqual(result, expected)
+
+    def test_long_exit(self):
+        expected = {'side': 'sell', 'price': 0.38077, 'amount': 164.67}
+        trade = {'side': 'long', 'entry_price': 0.36964, 'exit_price': 0.38077}
+        filled_amount=164.67
+        result = exit_order(trade, filled_amount)
+        self.assertEqual(result, expected)
+
+    def test_short_exit(self):
+        expected = {'side': 'buy', 'price': 0.36964, 'amount': 160.20}
+        trade = {'side': 'short', 'entry_price': 0.38077, 'exit_price': 0.36964}
+        filled_amount = 160.20
+        result = exit_order(trade, filled_amount)
+        self.assertEqual(result, expected)
+
+    def test_exit_value_error(self):
+        trade = {'side': 'lng', 'entry_price': 0.38077, 'exit_price': 0.36964}
+        filled_amount = 160.20
+        with self.assertRaises(ValueError):
+            exit_order(trade, filled_amount)
+        
 
 if __name__ == '__main__':
     unittest.main()
