@@ -90,22 +90,14 @@ def free_levels_above(levels, current_price, trades, count=2):
 
     return free  
 
-# def free_levels_below(levels, current_price, trades, count=2):
-#     taken = []
-#     for trade in trades:
-#         taken.append(trade['entry_price'])
-#         taken.append(trade['exit_price'])
-#     free = []
-#     for level in reversed(levels):
-#         if level >= current_price:
-#             continue
-#         if level in taken:
-#             continue
-#         free.append(level)
-#         if len(free) == count:
-#             return free
-#     return free
-
+def exit_order(trade, filled_amount):
+    """Return the exit order (side, price, amount) for a trade whose entry filled."""
+    if trade['side'] == 'long':
+        return {'side': 'sell', 'price': trade['exit_price'], 'amount': filled_amount}
+    elif trade['side'] == 'short':
+        return {'side': 'buy', 'price': trade['exit_price'], 'amount': filled_amount}
+    else:
+        raise ValueError(f"Unknown trade side: {trade['side']}")
 
 if __name__ == '__main__':
     current_price = round(1, 4)
