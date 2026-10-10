@@ -99,6 +99,22 @@ def exit_order(trade, filled_amount):
     else:
         raise ValueError(f"Unknown trade side: {trade['side']}")
 
+def neighbor_level(levels, level, direction):
+    """ when bot places a trade, it has to know where the exit goes """
+    i = levels.index(level)
+    if direction == 'up':
+        if i == len(levels) - 1:
+            return None
+        else:
+            return levels[i + 1]
+    elif direction == 'down':
+        if i == 0:
+            return None
+        else:
+            return levels[i - 1]
+    else:
+        raise ValueError(f"Unknown trade direction {direction}.")
+
 if __name__ == '__main__':
     current_price = round(1, 4)
     levels = centered_grid(current_price, 0.02, 10)
