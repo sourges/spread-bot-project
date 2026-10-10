@@ -1,5 +1,6 @@
 import unittest
-from grid import grid_levels, split_levels, centered_grid, tick_to_decimals, geometric_levels, free_levels_below, free_levels_above, exit_order
+from grid import grid_levels, split_levels, centered_grid, tick_to_decimals, geometric_levels, free_levels_below, free_levels_above, exit_order, neighbor_level
+
 
 class LevelTest(unittest.TestCase):
     def test_five_levels(self):
@@ -172,6 +173,34 @@ class LevelTest(unittest.TestCase):
         filled_amount = 160.20
         with self.assertRaises(ValueError):
             exit_order(trade, filled_amount)
+
+    def test_up_exit(self):
+        levels = [0.32829, 0.33818, 0.34835, 0.35884, 0.36964, 0.38077]
+        expected = 0.38077
+        result = neighbor_level(levels, 0.36964, 'up')
+        self.assertEqual(result, expected)
+
+    def test_down_exit(self):
+        levels = [0.32829, 0.33818, 0.34835, 0.35884, 0.36964, 0.38077]
+        expected = 0.35884
+        result = neighbor_level(levels, 0.36964, 'down')
+        self.assertEqual(result, expected)
+
+    def test_top_exit(self):
+        levels = [0.32829, 0.33818, 0.34835, 0.35884, 0.36964, 0.38077]
+        result = neighbor_level(levels, 0.38077, 'up')
+        self.assertIsNone(result)
+
+    def test_bottom_exit(self):
+            levels = [0.32829, 0.33818, 0.34835, 0.35884, 0.36964, 0.38077]
+            result = neighbor_level(levels, 0.32829, 'down')
+            self.assertIsNone(result)
+
+    def test_error_exit(self):
+        levels = [0.32829, 0.33818, 0.34835, 0.35884, 0.36964, 0.38077]
+        with self.assertRaises(ValueError):
+            neighbor_level(levels, 0.38077, 'sideways')
+
         
 
 if __name__ == '__main__':
