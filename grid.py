@@ -123,10 +123,55 @@ def live_entries(trades, side):
             result.append(trade)
     return result
 
+def plan_entries(levels, current_price, trades, count=2):
+    long_targets = free_levels_below(levels, current_price, trades, count)
+    short_targets = free_levels_above(levels, current_price, trades, count)
+    live_longs = live_entries(trades, 'long')
+    live_shorts = live_entries(trades, 'short')
+    
+    cancel_longs = [t for t in live_longs if t['entry_price'] not in long_targets]
+    cancel_shorts = [t for t in live_shorts if t['entry_price'] not in short_targets]
+    
+    place = []
+    live_long_prices = [t['entry_price'] for t in live_longs]
+    for target in long_targets:
+        if target in live_long_prices:
+            continue
+        exit_price = neighbor_level(levels, target, 'up')
+        if exit_price is None:
+            continue
+        trade = {'side': 'long', 'entry_price': target, 'exit_price': exit_price,
+                'amount': None, 'entry_id': None, 'exit_id': None,
+                'status': 'entry_open'}
+        place.append(trade)
+
+    live_short_prices = [t['entry_price'] for t in live_shorts]
+    for target in short_targets:
+        if target in live_short_prices:
+            continue
+        exit_price = neighbor_level(levels, target, 'down')
+        if exit_price is None:
+            continue
+        trade = {'side': 'short', 'entry_price': target, 'exit_price': exit_price,
+                'amount': None, 'entry_id': None, 'exit_id': None,
+                'status': 'entry_open'}
+        place.append(trade)
+
+    return {'place': place, 'cancel': cancel_longs + cancel_shorts}
+    
 
 if __name__ == '__main__':
-    current_price = round(1, 4)
-    levels = centered_grid(current_price, 0.02, 10)
-    answer = split_levels(levels, current_price)
-    print(answer)
+    levels = [0.32829, 0.33818, 0.34835, 0.35884, 0.36964, 0.38077]
+    current_price = 0.3795
+    trades = [
+        {'side': 'long', 'entry_price': 0.35884, 'exit_price': 0.36964,
+         'amount': None, 'entry_id': 'A', 'exit_id': None,
+         'status': 'entry_open'},
+        {'side': 'long', 'entry_price': 0.34835, 'exit_price': 0.35884,
+         'amount': None, 'entry_id': 'B', 'exit_id': None,
+         'status': 'entry_open'},
+    ]
+    plan = plan_entries(levels, current_price, trades)
+    print(plan)
+    
 
