@@ -1,5 +1,5 @@
 import unittest
-from grid import grid_levels, split_levels, centered_grid, tick_to_decimals, geometric_levels, free_levels_below, free_levels_above, exit_order, neighbor_level, live_entries
+from grid import grid_levels, split_levels, centered_grid, tick_to_decimals, geometric_levels, free_levels_below, free_levels_above, exit_order, neighbor_level, live_entries, plan_entries
 
 
 class LevelTest(unittest.TestCase):
@@ -8,6 +8,7 @@ class LevelTest(unittest.TestCase):
         self.long_filled = {'side': 'long',  'status': 'exit_open',  'entry_price': 0.36964, 'exit_price': 0.38077}
         self.short_live  = {'side': 'short', 'status': 'entry_open', 'entry_price': 0.38077, 'exit_price': 0.36964}
         self.trades = [self.long_live, self.long_filled, self.short_live]
+        self.levels = [0.32829, 0.33818, 0.34835, 0.35884, 0.36964, 0.38077]
 
     
     def test_five_levels(self):
@@ -220,6 +221,77 @@ class LevelTest(unittest.TestCase):
         trades = []
         result = live_entries(trades, 'long')
         self.assertEqual(result, [])
+
+    def test_plan_entries_worked_example(self):
+        current_price = 0.3795
+        trades = [
+                {'side': 'long', 'entry_price': 0.35884, 'exit_price': 0.36964,
+                 'amount': None, 'entry_id': 'A', 'exit_id': None,
+                 'status': 'entry_open'},
+                {'side': 'long', 'entry_price': 0.34835, 'exit_price': 0.35884,
+                 'amount': None, 'entry_id': 'B', 'exit_id': None,
+                 'status': 'entry_open'},]
+        expected = {'place': [{'side': 'long', 'entry_price': 0.36964, 'exit_price': 0.38077, 'amount': None, 'entry_id': None, 'exit_id': None, 'status': 'entry_open'},
+                              {'side': 'short', 'entry_price': 0.38077, 'exit_price': 0.36964, 'amount': None, 'entry_id': None, 'exit_id': None, 'status': 'entry_open'}], 
+                              'cancel': [trades[1]]}
+        result = plan_entries(self.levels, current_price, trades)
+        self.assertEqual(result, expected)
+
+    def test_plan_entries_nothing_to_do(self):
+        current_price = 0.3795
+        trades = [
+                {'side': 'long', 'entry_price': 0.36964, 'exit_price': 0.38077,
+                 'amount': None, 'entry_id': 'A', 'exit_id': None,
+                 'status': 'entry_open'},
+                {'side': 'long', 'entry_price': 0.35884, 'exit_price': 0.36964,
+                 'amount': None, 'entry_id': 'B', 'exit_id': None,
+                 'status': 'entry_open'},
+                 {'side': 'short', 'entry_price': 0.38077, 'exit_price': 0.36964,
+                 'amount': None, 'entry_id': 'C', 'exit_id': None,
+                 'status': 'entry_open'}]
+        expected = {'place': [], 'cancel': []}
+        result = plan_entries(self.levels, current_price, trades)
+        self.assertEqual(result, expected)
+
+    def test_plan_entries_skips_top_level(self):
+        current_price = 0.39
+        trades = []
+
+        expected = {
+            'place': [
+                {'side': 'long', 'entry_price': 0.36964, 'exit_price': 0.38077,
+                 'amount': None, 'entry_id': None, 'exit_id': None,
+                 'status': 'entry_open'},
+            ],
+            'cancel': [],
+        }
+        result = plan_entries(self.levels, current_price, trades)
+        self.assertEqual(result, expected)
+
+    def test_plan_entries_filled_trade_blocks_levels(self):
+        current_price = 0.3795
+        trades = [
+            {'side': 'long', 'entry_price': 0.36964, 'exit_price': 0.38077,
+            'amount': None, 'entry_id': 'A', 'exit_id': 'X',
+            'status': 'exit_open'},
+        ]
+        # taken: 0.36964, 0.38077
+        # long targets: 0.35884, 0.34835 (0.36964 skipped)
+        # short targets: none (0.38077 taken)
+        # filled trade isn't entry_open, so it can't be cancelled
+        expected = {
+            'place': [
+                {'side': 'long', 'entry_price': 0.35884, 'exit_price': 0.36964,
+                'amount': None, 'entry_id': None, 'exit_id': None,
+                'status': 'entry_open'},
+                {'side': 'long', 'entry_price': 0.34835, 'exit_price': 0.35884,
+                'amount': None, 'entry_id': None, 'exit_id': None,
+                'status': 'entry_open'},
+            ],
+            'cancel': [],
+        }
+        result = plan_entries(self.levels, current_price, trades)
+        self.assertEqual(result, expected)
 
 if __name__ == '__main__':
     unittest.main()
