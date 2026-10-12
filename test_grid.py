@@ -1,8 +1,15 @@
 import unittest
-from grid import grid_levels, split_levels, centered_grid, tick_to_decimals, geometric_levels, free_levels_below, free_levels_above, exit_order, neighbor_level
+from grid import grid_levels, split_levels, centered_grid, tick_to_decimals, geometric_levels, free_levels_below, free_levels_above, exit_order, neighbor_level, live_entries
 
 
 class LevelTest(unittest.TestCase):
+    def setUp(self):
+        self.long_live = {'side': 'long', 'status': 'entry_open', 'entry_price': 0.35884, 'exit_price': 0.36964}
+        self.long_filled = {'side': 'long',  'status': 'exit_open',  'entry_price': 0.36964, 'exit_price': 0.38077}
+        self.short_live  = {'side': 'short', 'status': 'entry_open', 'entry_price': 0.38077, 'exit_price': 0.36964}
+        self.trades = [self.long_live, self.long_filled, self.short_live]
+
+    
     def test_five_levels(self):
         saved_levels = grid_levels(0.9990, 1.0010, 5)
         expected = [0.999, 0.9995, 1.0, 1.0005, 1.001]
@@ -201,7 +208,18 @@ class LevelTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             neighbor_level(levels, 0.38077, 'sideways')
 
-        
+    def test_long_live_entries(self):
+        result = live_entries(self.trades, 'long')
+        self.assertEqual(result, [self.long_live])
+
+    def test_short_live_entries(self):
+        result = live_entries(self.trades, 'short')
+        self.assertEqual(result, [self.short_live])
+
+    def test_empty_live_entries(self):
+        trades = []
+        result = live_entries(trades, 'long')
+        self.assertEqual(result, [])
 
 if __name__ == '__main__':
     unittest.main()
