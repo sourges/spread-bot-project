@@ -115,6 +115,15 @@ def neighbor_level(levels, level, direction):
     else:
         raise ValueError(f"Unknown trade direction {direction}.")
 
+def live_entries(trades, side):
+    """Return live (unfilled) entry trades for one side."""
+    result = []
+    for trade in trades:
+        if trade['status'] == 'entry_open' and trade['side'] == side:
+            result.append(trade)
+    return result
+
+
 if __name__ == '__main__':
     current_price = round(1, 4)
     levels = centered_grid(current_price, 0.02, 10)
