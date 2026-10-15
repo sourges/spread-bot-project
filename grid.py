@@ -160,6 +160,17 @@ def plan_entries(levels, current_price, trades, count=2):
     return {'place': place, 'cancel': cancel_longs + cancel_shorts}
     
 
+def order_amount(usd, price, decimals, min_amount):
+    """How many coins to order for `usd` dollars at `price`.
+    Rounds DOWN to Kraken's amount precision so we never spend more than `usd`.
+    Raises ValueError if the result is below Kraken's minimum order size."""
+    factor = 10 ** decimals
+    amount = math.floor(usd / price * factor) / factor
+    if amount < min_amount:
+        raise ValueError(f"Amount {amount} is below the minimum {min_amount}.")
+    return amount
+
+
 if __name__ == '__main__':
     levels = [0.32829, 0.33818, 0.34835, 0.35884, 0.36964, 0.38077]
     current_price = 0.3795

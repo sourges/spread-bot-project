@@ -158,6 +158,9 @@ env.bak/
 venv.bak/
 trades.txt
 state.json
+grid_state.json
+grid_state.json.tmp
+grid_trades.txt
 
 # Spyder project settings
 .spyderproject

@@ -1,6 +1,8 @@
 import unittest
 from grid import grid_levels, split_levels, centered_grid, tick_to_decimals, geometric_levels, free_levels_below, free_levels_above, exit_order, neighbor_level, live_entries, plan_entries
 
+from grid import order_amount
+
 
 class LevelTest(unittest.TestCase):
     def setUp(self):
@@ -292,6 +294,18 @@ class LevelTest(unittest.TestCase):
         }
         result = plan_entries(self.levels, current_price, trades)
         self.assertEqual(result, expected)
+
+    def test_order_amount_rounds_down(self):
+        # 61 / 0.35 = 174.2857... → round DOWN to 2 decimals → 174.28
+        result = order_amount(61, 0.35, 2, 20)
+        expected = 174.28
+        self.assertEqual(result, expected)
+
+    def test_order_amount_below_minimum(self):
+        # 5 / 0.35 = 14.28 CRV, below the 20 CRV minimum
+        with self.assertRaises(ValueError):
+            order_amount(5, 0.35, 2, 20)
+
 
 if __name__ == '__main__':
     unittest.main()
