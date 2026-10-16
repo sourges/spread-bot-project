@@ -213,5 +213,42 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
             await self.bot.run_cycle()
 
 
+    async def test_numbers_as_text_still_work(self):
+        # Kraken/ccxt sometimes returns cost/fee/filled as strings (the Oct 15 crash)
+        await self.bot.run_cycle()
+        sell = self.exchange.open_at('sell', 0.38077)
+        self.exchange.fill(sell['id'])
+        await self.bot.run_cycle()
+        exit_buy = self.exchange.open_at('buy', 0.36964)
+        self.exchange.fill(exit_buy['id'])
+        o = self.exchange.orders[exit_buy['id']]
+        o['cost'] = str(o['cost'])
+        o['filled'] = str(o['filled'])
+        o['fee'] = {'cost': str(o['fee']['cost']), 'currency': 'USD'}
+        await self.bot.run_cycle()
+
+        expected = (0.38077 - 0.36964) * 160.2 - 0.003 * 160.2 * (0.38077 + 0.36964)
+        self.assertAlmostEqual(self.bot.total_profit, expected, places=6)
+        self.assertEqual(self.bot.completed, 1)
+
+
+    async def test_old_saved_text_numbers_still_work(self):
+        # a trade saved before the fix, with entry_cost/entry_fee stored as text
+        await self.bot.run_cycle()
+        sell = self.exchange.open_at('sell', 0.38077)
+        self.exchange.fill(sell['id'])
+        await self.bot.run_cycle()
+        trade = [t for t in self.bot.trades if t['entry_id'] == sell['id']][0]
+        trade['entry_cost'] = str(trade['entry_cost'])
+        trade['entry_fee'] = str(trade['entry_fee'])
+        exit_buy = self.exchange.open_at('buy', 0.36964)
+        self.exchange.fill(exit_buy['id'])
+        await self.bot.run_cycle()
+
+        expected = (0.38077 - 0.36964) * 160.2 - 0.003 * 160.2 * (0.38077 + 0.36964)
+        self.assertAlmostEqual(self.bot.total_profit, expected, places=6)
+        self.assertEqual(self.bot.completed, 1)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -90,17 +90,19 @@ class GridBot:
         fee = order.get('fee')
         if not fee or fee.get('cost') is None:
             return 0.0
+        cost = float(fee['cost'])
         if fee.get('currency') == self.quote:
-            return fee['cost']
-        price = order.get('average') or order['price']
-        return fee['cost'] * price          # fee was charged in coins
+            return cost
+        price = float(order.get('average') or order['price'])
+        return cost * price                 # fee was charged in coins
 
     def order_cost(self, order):
         """USD value of what actually filled."""
+        # float() everywhere: Kraken/ccxt sometimes hands back numbers as text
         if order.get('cost'):
-            return order['cost']
-        price = order.get('average') or order['price']
-        return order['filled'] * price
+            return float(order['cost'])
+        price = float(order.get('average') or order['price'])
+        return float(order['filled']) * price
 
     def remove(self, trade):
         self.trades.remove(trade)
@@ -144,7 +146,7 @@ class GridBot:
         if order['status'] == 'closed':
             await self.entry_filled(trade, order)
         elif order['status'] in ('canceled', 'expired', 'rejected'):
-            if order['filled'] > 0:
+            if float(order['filled']) > 0:
                 await self.entry_filled(trade, order)       # partly filled before it died
             else:
                 self.remove(trade)
@@ -154,7 +156,7 @@ class GridBot:
 
     async def entry_filled(self, trade, order):
         """Entry filled: place the exit for exactly the amount that filled."""
-        filled = order['filled']
+        filled = float(order['filled'])
         if filled < self.min_amount:
             # Too small for Kraken to accept an exit. Drop it and tell the user.
             self.remove(trade)
@@ -190,11 +192,13 @@ class GridBot:
 
     async def exit_filled(self, trade, order):
         exit_cost = self.order_cost(order)
-        fees = trade['entry_fee'] + self.fee_usd(order)
+        # float(): trades saved before the Oct 15 fix may hold these as text
+        entry_cost = float(trade['entry_cost'])
+        fees = float(trade['entry_fee']) + self.fee_usd(order)
         if trade['side'] == 'long':
-            profit = exit_cost - trade['entry_cost'] - fees     # bought low, sold high
+            profit = exit_cost - entry_cost - fees     # bought low, sold high
         else:
-            profit = trade['entry_cost'] - exit_cost - fees     # sold high, bought back low
+            profit = entry_cost - exit_cost - fees     # sold high, bought back low
 
         self.total_profit += profit
         self.completed += 1
@@ -220,7 +224,7 @@ class GridBot:
         order = self.exchange.fetch_order(trade['entry_id'], self.pair)
         if order['status'] == 'open':
             return                              # cancel didn't go through; try next cycle
-        if order['filled'] > 0:
+        if float(order['filled']) > 0:
             await self.entry_filled(trade, order)
         else:
             self.remove(trade)
