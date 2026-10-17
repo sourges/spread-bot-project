@@ -17,7 +17,7 @@ CHECK_INTERVAL = 60
 
 # DRY_RUN = True: connect, show the plan, place NOTHING.
 # Set to False only after the dry run looks right.
-DRY_RUN = True
+DRY_RUN = False
 # ------------------------------
 
 load_dotenv()
