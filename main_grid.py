@@ -40,6 +40,14 @@ async def main():
         print("❌ Missing credentials in .env")
         return
 
+    # v2 renamed the files to grid_state_kraken_CRV_USD.json etc. If the old
+    # file is still here, starting would forget the open trades, so stop.
+    if os.path.exists('grid_state.json'):
+        print("❌ Found the old grid_state.json. Rename it before starting:\n"
+              "   grid_state.json  -> grid_state_kraken_CRV_USD.json\n"
+              "   grid_trades.txt  -> grid_trades_kraken_CRV_USD.txt")
+        return
+
     exchange = ccxt.kraken({'apiKey': KRAKEN_KEY, 'secret': KRAKEN_SECRET})
     exchange.load_markets()
     market = exchange.market(PAIR)

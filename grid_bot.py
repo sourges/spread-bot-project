@@ -1,6 +1,6 @@
 import asyncio
 import ccxt
-from grid import plan_entries, exit_order, order_amount
+from grid import plan_entries, exit_order, order_amount, bot_name
 from grid_state import save_grid_state, load_grid_state
 from log_trade import log_trade
 
@@ -13,7 +13,7 @@ class OrderProblem(Exception):
 class GridBot:
     def __init__(self, exchange, pair, levels, usd_per_entry, amount_decimals,
                  min_amount, alert, count=2, check_interval=60,
-                 state_file='grid_state.json', log_file='grid_trades.txt'):
+                 state_file=None, log_file=None):
         """
         exchange:        ccxt exchange object (Kraken now, Coinbase later)
         levels:          grid prices from geometric_levels()
@@ -22,6 +22,8 @@ class GridBot:
         min_amount:      Kraken's minimum order size in coins
         alert:           async function that sends a Telegram message
         count:           live entries per side (2 = 2 buys + 2 sells)
+        state_file, log_file: leave as None to name them after the bot,
+                         e.g. grid_state_kraken_CRV_USD.json
         """
         self.exchange = exchange
         self.pair = pair
@@ -29,11 +31,13 @@ class GridBot:
         self.usd_per_entry = usd_per_entry
         self.amount_decimals = amount_decimals
         self.min_amount = min_amount
-        self.alert = alert
+        self.send = alert                   # raw sender; use self.alert() instead
         self.count = count
         self.check_interval = check_interval
-        self.state_file = state_file
-        self.log_file = log_file
+        self.name = bot_name(exchange.id, pair)          # 'kraken_CRV_USD'
+        self.label = f"{exchange.id} {pair}"             # 'kraken CRV/USD'
+        self.state_file = state_file or f"grid_state_{self.name}.json"
+        self.log_file = log_file or f"grid_trades_{self.name}.txt"
 
         self.coin = pair.split('/')[0]      # 'CRV'
         self.quote = pair.split('/')[1]     # 'USD'
@@ -41,11 +45,18 @@ class GridBot:
         self.total_profit = 0.0
         self.completed = 0
 
+    async def alert(self, message):
+        """Every alert starts with the bot's label, so with several bots
+        you know which one is talking."""
+        await self.send(f"[{self.label}] {message}")
+
     # ---------- state ----------
 
     def save(self):
         """Save everything needed to restart. Called after EVERY change."""
         state = {
+            'exchange': self.exchange.id,
+            'pair': self.pair,
             'levels': self.levels,
             'trades': self.trades,
             'total_profit': self.total_profit,
@@ -58,6 +69,11 @@ class GridBot:
         because the saved trades refer to the saved levels."""
         state = load_grid_state(self.state_file)
         if state is not None:
+            # Files saved before v2 have no pair/exchange, so only check if present.
+            saved = (state.get('exchange', self.exchange.id), state.get('pair', self.pair))
+            if saved != (self.exchange.id, self.pair):
+                raise OrderProblem(f"{self.state_file} belongs to {saved[0]} {saved[1]}, "
+                                   f"not {self.label}. Nothing was placed.")
             if state['levels'] != self.levels:
                 await self.alert("⚠️ Grid settings changed since last run. "
                                  "Using the SAVED levels so open trades still match.")
@@ -81,7 +97,7 @@ class GridBot:
         if unknown:
             lines = [f"{o['side']} {o['amount']} @ {o['price']} ({o['id']})" for o in unknown]
             await self.alert("⚠️ Open orders on " + self.pair + " the grid bot did not place:\n"
-                             + "\n".join(lines) + "\nCheck Kraken. The bot will leave them alone.")
+                             + "\n".join(lines) + "\nCheck the exchange. The bot will leave them alone.")
 
     # ---------- small helpers ----------
 
@@ -265,8 +281,8 @@ class GridBot:
               f"done: {self.completed} | profit ${self.total_profit:.4f}")
 
     async def run_continuous(self):
-        await self.recover()
         try:
+            await self.recover()        # inside try, so a recovery problem sends 🛑
             while True:
                 try:
                     await self.run_cycle()
@@ -276,7 +292,7 @@ class GridBot:
                 await asyncio.sleep(self.check_interval)
         except OrderProblem as e:
             await self.alert(f"🛑 GRID BOT STOPPED - order problem\n{e}\n"
-                             "Check Kraken before restarting.")
+                             "Check the exchange before restarting.")
             print(e)
         except asyncio.CancelledError:
             await self.alert(f"⏹️ GRID BOT STOPPED\nOpen trades: {len(self.trades)}\n"

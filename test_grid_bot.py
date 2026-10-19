@@ -1,12 +1,15 @@
+import asyncio
 import os
 import unittest
 import ccxt
 from grid_bot import GridBot, OrderProblem
-from grid_state import load_grid_state
+from grid_state import load_grid_state, save_grid_state
 
 
 class FakeExchange:
     """Pretends to be Kraken. Orders live in a dict; tests fill them by hand."""
+
+    id = 'kraken'
 
     def __init__(self, price):
         self.price = price
@@ -200,6 +203,36 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(any(stray['id'] in a for a in self.alerts))
         self.assertEqual(self.exchange.orders[stray['id']]['status'], 'open')
+
+    async def test_alerts_say_which_bot(self):
+        await self.bot.alert('hello')
+        self.assertEqual(self.alerts, ['[kraken CRV/USD] hello'])
+
+    def test_default_file_names_include_exchange_and_pair(self):
+        async def alert(message):
+            pass
+        bot = GridBot(self.exchange, 'CRV/USD', self.levels, 61, 2, 20, alert)
+        self.assertEqual(bot.state_file, 'grid_state_kraken_CRV_USD.json')
+        self.assertEqual(bot.log_file, 'grid_trades_kraken_CRV_USD.txt')
+
+    async def test_state_file_from_another_pair_stops(self):
+        save_grid_state({'exchange': 'kraken', 'pair': 'CAKE/USD', 'levels': self.levels,
+                         'trades': [], 'total_profit': 0.0, 'completed': 0}, self.state_file)
+        # timeout: if the check were missing, the bot would trade forever
+        await asyncio.wait_for(self.bot.run_continuous(), timeout=2)
+
+        self.assertTrue(any('🛑' in a and 'CAKE/USD' in a for a in self.alerts))
+        self.assertEqual(self.exchange.orders, {})      # nothing placed
+
+    async def test_old_state_without_pair_still_recovers(self):
+        await self.bot.run_cycle()
+        state = load_grid_state(self.state_file)
+        del state['pair'], state['exchange']            # like a file saved before v2
+        save_grid_state(state, self.state_file)
+
+        new_bot = self.make_bot(self.levels)
+        await new_bot.recover()
+        self.assertEqual(len(new_bot.trades), 3)
 
     async def test_exit_cancelled_outside_bot_stops(self):
         await self.bot.run_cycle()

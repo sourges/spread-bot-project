@@ -1,7 +1,7 @@
 import unittest
 from grid import grid_levels, split_levels, centered_grid, tick_to_decimals, geometric_levels, free_levels_below, free_levels_above, exit_order, neighbor_level, live_entries, plan_entries
 
-from grid import order_amount
+from grid import order_amount, bot_name
 
 
 class LevelTest(unittest.TestCase):
@@ -305,6 +305,10 @@ class LevelTest(unittest.TestCase):
         # 5 / 0.35 = 14.28 CRV, below the 20 CRV minimum
         with self.assertRaises(ValueError):
             order_amount(5, 0.35, 2, 20)
+
+    def test_bot_name(self):
+        self.assertEqual(bot_name('kraken', 'CRV/USD'), 'kraken_CRV_USD')
+        self.assertEqual(bot_name('coinbase', 'CRV/USDC'), 'coinbase_CRV_USDC')
 
 
 if __name__ == '__main__':

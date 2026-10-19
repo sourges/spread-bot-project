@@ -171,6 +171,13 @@ def order_amount(usd, price, decimals, min_amount):
     return amount
 
 
+def bot_name(exchange_id, pair):
+    """A name for one bot that is safe to use in file names.
+    ('kraken', 'CRV/USD') -> 'kraken_CRV_USD'. The exchange is part of the name
+    because the same pair can run on two exchanges."""
+    return f"{exchange_id}_{pair.replace('/', '_')}"
+
+
 if __name__ == '__main__':
     levels = [0.32829, 0.33818, 0.34835, 0.35884, 0.36964, 0.38077]
     current_price = 0.3795
