@@ -2,7 +2,7 @@ import asyncio
 import os
 import unittest
 import ccxt
-from grid_bot import GridBot, OrderProblem
+from grid_bot import GridBot, OrderProblem, run_bots
 from grid_state import load_grid_state, save_grid_state
 
 
@@ -233,6 +233,30 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
         new_bot = self.make_bot(self.levels)
         await new_bot.recover()
         self.assertEqual(len(new_bot.trades), 3)
+
+    async def test_one_bot_crashing_does_not_stop_the_other(self):
+        class BrokenExchange(FakeExchange):
+            def fetch_ticker(self, symbol):
+                raise RuntimeError("boom")
+
+        async def alert(message):
+            self.alerts.append(message)
+
+        broken = GridBot(BrokenExchange(price=0.3795), 'CAKE/USD', self.levels, 61, 2, 20,
+                         alert, count=2, check_interval=0,
+                         state_file='test_state_cake.json', log_file='test_log_cake.txt')
+        try:
+            # run_bots never ends on its own while one bot is healthy, so stop it after 0.5s
+            with self.assertRaises(asyncio.TimeoutError):
+                await asyncio.wait_for(run_bots([broken, self.bot]), timeout=0.5)
+        finally:
+            for f in ('test_state_cake.json', 'test_log_cake.txt'):
+                if os.path.exists(f):
+                    os.remove(f)
+
+        self.assertTrue(any('[kraken CAKE/USD] 🛑' in a for a in self.alerts))
+        self.assertEqual(len(self.exchange.fetch_open_orders('CRV/USD')), 3)   # CRV bot kept trading
+        self.assertTrue(any('[kraken CRV/USD] ⏹️' in a for a in self.alerts))   # and stopped cleanly
 
     async def test_exit_cancelled_outside_bot_stops(self):
         await self.bot.run_cycle()

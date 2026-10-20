@@ -3,26 +3,11 @@ import os
 import ccxt
 from dotenv import load_dotenv
 from telegram import Bot
-from grid import geometric_levels, tick_to_decimals, plan_entries, order_amount
-from grid_bot import GridBot
-
-# ---------- settings ----------
-PAIR = 'CRV/USD'
-LOWER = 0.1431          # same range as the 3commas CRV bot
-UPPER = 1.1442
-NUM_LEVELS = 71         # 70 grids → ~3.01% apart
-USD_PER_ENTRY = 61
-COUNT = 2               # 2 buys below + 2 sells above
-CHECK_INTERVAL = 60
-
-# DRY_RUN = True: connect, show the plan, place NOTHING.
-# Set to False only after the dry run looks right.
-DRY_RUN = False
-# ------------------------------
+from grid import geometric_levels, tick_to_decimals, plan_entries, order_amount, check_config
+from grid_bot import GridBot, run_bots
+from bots_config import BOTS, CHECK_INTERVAL, DRY_RUN
 
 load_dotenv()
-KRAKEN_KEY = os.getenv('KRAKEN_API_KEY')
-KRAKEN_SECRET = os.getenv('KRAKEN_API_SECRET')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
@@ -35,9 +20,48 @@ def to_decimals(exchange, precision):
     return int(precision)
 
 
+def make_exchange(name):
+    """One connection per exchange, shared by all its bots, so ccxt can
+    pace requests across them and stay under the account's rate limit.
+    Keys come from .env as KRAKEN_API_KEY / KRAKEN_API_SECRET, etc."""
+    key = os.getenv(f'{name.upper()}_API_KEY')
+    secret = os.getenv(f'{name.upper()}_API_SECRET')
+    if not key or not secret:
+        raise ValueError(f"Missing {name.upper()}_API_KEY or {name.upper()}_API_SECRET in .env")
+    exchange = getattr(ccxt, name)({'apiKey': key, 'secret': secret})
+    exchange.load_markets()
+    return exchange
+
+
+def build_bot(exchange, cfg, alert):
+    """Work out the grid for one bot, print what it would do, return the GridBot."""
+    pair = cfg['pair']
+    market = exchange.market(pair)
+    price_decimals = to_decimals(exchange, market['precision']['price'])
+    amount_decimals = to_decimals(exchange, market['precision']['amount'])
+    min_amount = market['limits']['amount']['min']
+
+    levels = geometric_levels(cfg['lower'], cfg['upper'], cfg['levels'], price_decimals)
+    if len(set(levels)) != len(levels):
+        raise ValueError(f"{pair}: some levels are identical after rounding. Use fewer levels.")
+
+    price = exchange.fetch_ticker(pair)['last']
+    print(f"\n=== {exchange.id} {pair} ===")
+    print(f"Price {price} | {len(levels)} levels {levels[0]}–{levels[-1]} | "
+          f"min amount {min_amount}")
+    plan = plan_entries(levels, price, [], cfg['count'])
+    for t in plan['place']:
+        side = 'BUY ' if t['side'] == 'long' else 'SELL'
+        amount = order_amount(cfg['usd_per_entry'], t['entry_price'], amount_decimals, min_amount)
+        print(f"  {side} {amount} @ {t['entry_price']}  (exit @ {t['exit_price']})")
+
+    return GridBot(exchange, pair, levels, cfg['usd_per_entry'], amount_decimals,
+                   min_amount, alert, count=cfg['count'], check_interval=CHECK_INTERVAL)
+
+
 async def main():
-    if not all([KRAKEN_KEY, KRAKEN_SECRET, TELEGRAM_TOKEN, CHAT_ID]):
-        print("❌ Missing credentials in .env")
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("❌ Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID in .env")
         return
 
     # v2 renamed the files to grid_state_kraken_CRV_USD.json etc. If the old
@@ -48,34 +72,10 @@ async def main():
               "   grid_trades.txt  -> grid_trades_kraken_CRV_USD.txt")
         return
 
-    exchange = ccxt.kraken({'apiKey': KRAKEN_KEY, 'secret': KRAKEN_SECRET})
-    exchange.load_markets()
-    market = exchange.market(PAIR)
-
-    price_decimals = to_decimals(exchange, market['precision']['price'])
-    amount_decimals = to_decimals(exchange, market['precision']['amount'])
-    min_amount = market['limits']['amount']['min']
-
-    levels = geometric_levels(LOWER, UPPER, NUM_LEVELS, price_decimals)
-    if len(set(levels)) != len(levels):
-        print("❌ Some levels are identical after rounding. Use fewer levels.")
-        return
-
-    price = exchange.fetch_ticker(PAIR)['last']
-    print(f"{PAIR} price: {price}")
-    print(f"Price decimals: {price_decimals} | amount decimals: {amount_decimals} | min amount: {min_amount}")
-    print(f"{len(levels)} levels from {levels[0]} to {levels[-1]}")
-
-    # Show what the first cycle would place (assumes no saved trades)
-    plan = plan_entries(levels, price, [], COUNT)
-    print("\nFirst cycle would place:")
-    for t in plan['place']:
-        side = 'BUY ' if t['side'] == 'long' else 'SELL'
-        amount = order_amount(USD_PER_ENTRY, t['entry_price'], amount_decimals, min_amount)
-        print(f"  {side} {amount} @ {t['entry_price']}  (exit @ {t['exit_price']})")
-
-    if DRY_RUN:
-        print("\nDRY_RUN is on. Nothing was placed. Set DRY_RUN = False to trade.")
+    try:
+        check_config(BOTS)
+    except ValueError as e:
+        print(f"❌ bots_config.py: {e}")
         return
 
     telegram = Bot(token=TELEGRAM_TOKEN)
@@ -87,10 +87,20 @@ async def main():
         except Exception as e:
             print(f"[TELEGRAM ERROR] {e}")
 
-    bot = GridBot(exchange, PAIR, levels, USD_PER_ENTRY, amount_decimals, min_amount,
-                  alert, count=COUNT, check_interval=CHECK_INTERVAL)
-    print("\n🚀 Grid bot running. Ctrl+C to stop.")
-    await bot.run_continuous()
+    exchanges = {}
+    bots = []
+    for cfg in BOTS:
+        name = cfg['exchange']
+        if name not in exchanges:
+            exchanges[name] = make_exchange(name)
+        bots.append(build_bot(exchanges[name], cfg, alert))
+
+    if DRY_RUN:
+        print("\nDRY_RUN is on. Nothing was placed. Set DRY_RUN = False in bots_config.py to trade.")
+        return
+
+    print(f"\n🚀 Running {len(bots)} grid bot(s). Ctrl+C to stop all.")
+    await run_bots(bots)
 
 
 if __name__ == '__main__':

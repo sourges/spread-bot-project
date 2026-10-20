@@ -1,7 +1,7 @@
 import unittest
 from grid import grid_levels, split_levels, centered_grid, tick_to_decimals, geometric_levels, free_levels_below, free_levels_above, exit_order, neighbor_level, live_entries, plan_entries
 
-from grid import order_amount, bot_name
+from grid import order_amount, bot_name, check_config
 
 
 class LevelTest(unittest.TestCase):
@@ -309,6 +309,37 @@ class LevelTest(unittest.TestCase):
     def test_bot_name(self):
         self.assertEqual(bot_name('kraken', 'CRV/USD'), 'kraken_CRV_USD')
         self.assertEqual(bot_name('coinbase', 'CRV/USDC'), 'coinbase_CRV_USDC')
+
+    def test_check_config_accepts_good_bots(self):
+        bots = [{'exchange': 'kraken', 'pair': 'CRV/USD', 'lower': 0.14, 'upper': 1.14,
+                 'levels': 71, 'usd_per_entry': 61, 'count': 2},
+                {'exchange': 'coinbase', 'pair': 'CRV/USD', 'lower': 0.2, 'upper': 1.2,
+                 'levels': 66, 'usd_per_entry': 50, 'count': 2}]
+        check_config(bots)          # same pair on two exchanges is fine; no error = pass
+
+    def test_check_config_rejects_duplicate(self):
+        bot = {'exchange': 'kraken', 'pair': 'CRV/USD', 'lower': 0.14, 'upper': 1.14,
+               'levels': 71, 'usd_per_entry': 61, 'count': 2}
+        with self.assertRaises(ValueError):
+            check_config([bot, dict(bot)])
+
+    def test_check_config_rejects_bad_values(self):
+        good = {'exchange': 'kraken', 'pair': 'CRV/USD', 'lower': 0.14, 'upper': 1.14,
+                'levels': 71, 'usd_per_entry': 61, 'count': 2}
+        bad_changes = [{'lower': 2.0},          # lower above upper
+                       {'levels': 1},
+                       {'usd_per_entry': 0},
+                       {'count': 0}]
+        for change in bad_changes:
+            with self.subTest(change=change):
+                with self.assertRaises(ValueError):
+                    check_config([{**good, **change}])
+
+    def test_check_config_rejects_missing_key(self):
+        bot = {'exchange': 'kraken', 'pair': 'CRV/USD', 'lower': 0.14, 'upper': 1.14,
+               'levels': 71, 'count': 2}               # no usd_per_entry
+        with self.assertRaises(ValueError):
+            check_config([bot])
 
 
 if __name__ == '__main__':

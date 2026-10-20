@@ -178,6 +178,28 @@ def bot_name(exchange_id, pair):
     return f"{exchange_id}_{pair.replace('/', '_')}"
 
 
+def check_config(bots):
+    """Catch mistakes in bots_config.BOTS before anything trades.
+    Raises ValueError explaining the first problem found."""
+    needed = ['exchange', 'pair', 'lower', 'upper', 'levels', 'usd_per_entry', 'count']
+    seen = set()
+    for bot in bots:
+        for key in needed:
+            if key not in bot:
+                raise ValueError(f"{bot.get('pair', '?')}: missing '{key}'")
+        name = bot_name(bot['exchange'], bot['pair'])
+        if name in seen:
+            # Two bots would share one state file and fight over it.
+            raise ValueError(f"{name} is listed twice")
+        seen.add(name)
+        if bot['lower'] >= bot['upper']:
+            raise ValueError(f"{name}: lower must be below upper")
+        if bot['levels'] < 2:
+            raise ValueError(f"{name}: needs at least 2 levels")
+        if bot['usd_per_entry'] <= 0 or bot['count'] < 1:
+            raise ValueError(f"{name}: usd_per_entry and count must be positive")
+
+
 if __name__ == '__main__':
     levels = [0.32829, 0.33818, 0.34835, 0.35884, 0.36964, 0.38077]
     current_price = 0.3795

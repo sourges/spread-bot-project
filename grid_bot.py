@@ -302,3 +302,14 @@ class GridBot:
             # Anything unexpected: stop instead of looping blindly with real money.
             await self.alert(f"🛑 GRID BOT STOPPED - unexpected error\n{type(e).__name__}: {e}")
             raise
+
+
+async def run_bots(bots):
+    """Run several grid bots at the same time.
+
+    Each bot stops on its own problems without stopping the others:
+    return_exceptions=True means one bot's crash is collected instead of
+    cancelling the rest. Ctrl+C still stops them all, and each sends its
+    own STOPPED alert."""
+    await asyncio.gather(*(bot.run_continuous() for bot in bots),
+                         return_exceptions=True)
