@@ -14,7 +14,13 @@ BOTS = [
     {'exchange': 'kraken', 'pair': 'CRV/USD',
      'lower': 0.1431, 'upper': 1.1442, 'levels': 71,
      'usd_per_entry': 61, 'count': 2},
+
+    {'exchange': 'coinbase', 'pair': 'CRV/USDC',
+    'lower': 0.2, 'upper': 1.2, 'levels': 61,
+    'usd_per_entry': 8, 'count': 2},
 ]
+
+
 
 CHECK_INTERVAL = 60     # seconds between cycles, for every bot
 
