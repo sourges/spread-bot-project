@@ -45,6 +45,10 @@ class GridBot:
         self.total_profit = 0.0
         self.completed = 0
 
+    def log(self, message):
+        """Terminal line, labelled like the alerts: [kraken CRV/USD] ..."""
+        print(f"[{self.label}] {message}")
+
     async def alert(self, message):
         """Every alert starts with the bot's label, so with several bots
         you know which one is talking."""
@@ -142,7 +146,7 @@ class GridBot:
                 order = self.exchange.create_order(self.pair, 'limit', side, amount, price)
                 return order['id']
             except Exception as e:
-                print(f"Exit {side} failed (attempt {attempt}/{max_attempts}): {e}")
+                self.log(f"Exit {side} failed (attempt {attempt}/{max_attempts}): {e}")
                 if attempt < max_attempts:
                     await asyncio.sleep(self.check_interval)
         raise OrderProblem(f"Could not place exit {side} {amount} {self.coin} @ {price}.")
@@ -233,7 +237,7 @@ class GridBot:
         try:
             self.exchange.cancel_order(trade['entry_id'], self.pair)
         except (ccxt.OrderNotFound, ccxt.InvalidOrder) as e:
-            print(f"Cancel of {trade['entry_id']} failed ({e}), probably already filled.")
+            self.log(f"Cancel of {trade['entry_id']} failed ({e}), probably already filled.")
 
         # Always check what really happened. It may have filled just before
         # the cancel arrived (the "cancel race").
@@ -244,7 +248,7 @@ class GridBot:
             await self.entry_filled(trade, order)
         else:
             self.remove(trade)
-            print(f"Cancelled {trade['side']} entry @ {trade['entry_price']}")
+            self.log(f"Cancelled {trade['side']} entry @ {trade['entry_price']}")
 
     # ---------- step 3: place new entries ----------
 
@@ -261,12 +265,12 @@ class GridBot:
             except Exception as e:
                 # e.g. post-only rejected because price moved. Nothing is at risk,
                 # so just try again next cycle.
-                print(f"Could not place {trade['side']} entry @ {trade['entry_price']}: {e}")
+                self.log(f"Could not place {trade['side']} entry @ {trade['entry_price']}: {e}")
                 continue
             trade['amount'] = amount
             self.trades.append(trade)
             self.save()
-            print(f"Placed {trade['side']} entry: {side} {amount} {self.coin} @ {trade['entry_price']}")
+            self.log(f"Placed {trade['side']} entry: {side} {amount} {self.coin} @ {trade['entry_price']}")
 
     # ---------- the loop ----------
 
@@ -277,7 +281,7 @@ class GridBot:
         for trade in plan['cancel']:                              # 2. cancel far entries
             await self.cancel_entry(trade)
         await self.place_entries(price)                           # 3. re-plan, then place
-        print(f"Price {price} | open trades: {len(self.trades)} | "
+        self.log(f"Price {price} | open trades: {len(self.trades)} | "
               f"done: {self.completed} | profit ${self.total_profit:.4f}")
 
     async def run_continuous(self):
@@ -288,7 +292,7 @@ class GridBot:
                     await self.run_cycle()
                 except ccxt.NetworkError as e:
                     # Internet or Kraken hiccup: nothing changed, just try again.
-                    print(f"Network problem, retrying next cycle: {e}")
+                    self.log(f"Network problem, retrying next cycle: {e}")
                 await asyncio.sleep(self.check_interval)
         except OrderProblem as e:
             await self.alert(f"🛑 GRID BOT STOPPED - order problem\n{e}\n"

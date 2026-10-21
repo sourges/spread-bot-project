@@ -1,4 +1,6 @@
 import asyncio
+import contextlib
+import io
 import os
 import unittest
 import ccxt
@@ -207,6 +209,14 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
     async def test_alerts_say_which_bot(self):
         await self.bot.alert('hello')
         self.assertEqual(self.alerts, ['[kraken CRV/USD] hello'])
+
+    async def test_terminal_lines_say_which_bot(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):        # catch what print() writes
+            await self.bot.run_cycle()
+        lines = out.getvalue().splitlines()
+        self.assertTrue(lines)
+        self.assertTrue(all(line.startswith('[kraken CRV/USD] ') for line in lines))
 
     def test_default_file_names_include_exchange_and_pair(self):
         async def alert(message):
