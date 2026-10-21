@@ -42,6 +42,7 @@ class GridBot:
         self.coin = pair.split('/')[0]      # 'CRV'
         self.quote = pair.split('/')[1]     # 'USD'
         self.trades = []
+        self.cancelling = set()     # entry ids the bot asked to cancel (Coinbase cancels lag)
         self.total_profit = 0.0
         self.completed = 0
 
@@ -168,6 +169,11 @@ class GridBot:
         elif order['status'] in ('canceled', 'expired', 'rejected'):
             if float(order['filled']) > 0:
                 await self.entry_filled(trade, order)       # partly filled before it died
+            elif trade['entry_id'] in self.cancelling:
+                # Our own cancel from an earlier cycle finished. Nothing unusual.
+                self.cancelling.discard(trade['entry_id'])
+                self.remove(trade)
+                self.log(f"Cancelled {trade['side']} entry @ {trade['entry_price']}")
             else:
                 self.remove(trade)
                 await self.alert(f"⚠️ {trade['side']} entry @ {trade['entry_price']} was "
@@ -243,7 +249,10 @@ class GridBot:
         # the cancel arrived (the "cancel race").
         order = self.exchange.fetch_order(trade['entry_id'], self.pair)
         if order['status'] == 'open':
-            return                              # cancel didn't go through; try next cycle
+            # Some exchanges (Coinbase) take a moment to cancel. Remember we asked,
+            # so next cycle's check doesn't report it as cancelled "outside the bot".
+            self.cancelling.add(trade['entry_id'])
+            return
         if float(order['filled']) > 0:
             await self.entry_filled(trade, order)
         else:

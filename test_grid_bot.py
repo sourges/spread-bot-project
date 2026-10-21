@@ -268,6 +268,22 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.exchange.fetch_open_orders('CRV/USD')), 3)   # CRV bot kept trading
         self.assertTrue(any('[kraken CRV/USD] ⏹️' in a for a in self.alerts))   # and stopped cleanly
 
+    async def test_slow_cancel_is_not_reported_as_outside(self):
+        """Coinbase: right after a cancel, the order can still show 'open'."""
+        await self.bot.run_cycle()
+        buy = self.exchange.open_at('buy', 0.35884)            # the far long entry
+        real_cancel = self.exchange.cancel_order
+        self.exchange.cancel_order = lambda order_id, symbol: None   # cancel "not done yet"
+
+        self.exchange.price = 0.33                              # far entry must be cancelled
+        await self.bot.run_cycle()
+        self.exchange.orders[buy['id']]['status'] = 'canceled'  # cancel finishes later
+        self.exchange.cancel_order = real_cancel
+        await self.bot.run_cycle()
+
+        self.assertFalse(any('outside the bot' in a for a in self.alerts))
+        self.assertNotIn(buy['id'], [t['entry_id'] for t in self.bot.trades])
+
     async def test_exit_cancelled_outside_bot_stops(self):
         await self.bot.run_cycle()
         buy = self.exchange.open_at('buy', 0.36964)
