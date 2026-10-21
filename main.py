@@ -76,8 +76,8 @@ async def main():
         exchange=exchange,
         pair='USDG/USD',
         buy_price=0.9999,
-        sell_price=1.0001,
-        amount=10,
+        sell_price=1.0000,
+        amount=100,
         telegram_token=TELEGRAM_TOKEN,
         chat_id=CHAT_ID,
         check_interval=60
@@ -87,8 +87,8 @@ async def main():
     print("\n⚠️  WARNING: This will place REAL trades on Kraken!")
     print(f"   Trading pair: USDG/USD")
     print(f"   Buy price: 0.9999")
-    print(f"   Sell price: 1.0001")
-    print(f"   Amount per trade: 10 USDG")
+    print(f"   Sell price: 1.0000")
+    print(f"   Amount per trade: 100 USDG")
     response = input("\nDo you want to start the bot? (yes/no): ")
 
     if response.lower() == 'yes':
