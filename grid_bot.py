@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 import ccxt
 from grid import plan_entries, exit_order, order_amount, bot_name
 from grid_state import save_grid_state, load_grid_state
@@ -138,13 +139,39 @@ class GridBot:
                                            {'postOnly': True})
         return order['id']
 
-    async def place_exit(self, side, amount, price, max_attempts=5):
+    def tag_params(self, tag):
+        """Our own name tag for an order. Each exchange calls it something different."""
+        if self.exchange.id == 'coinbase':
+            return {'client_order_id': tag}
+        return {'clientOrderId': tag}           # Kraken: ccxt sends it as cl_ord_id
+
+    def find_order_by_tag(self, tag):
+        """The order on the exchange with this tag, or None.
+        Looks at open orders first, then recently closed ones (it may have filled fast)."""
+        for order in self.exchange.fetch_open_orders(self.pair):
+            if order.get('clientOrderId') == tag:
+                return order
+        for order in self.exchange.fetch_closed_orders(self.pair):
+            if order.get('clientOrderId') == tag:
+                return order
+        return None
+
+    async def place_exit(self, side, amount, price, tag, max_attempts=5):
         """Exits are plain limit orders (no post-only): once we hold the
         position, getting out matters more than the fee. Retries a few
-        times, then stops the bot, since we'd be holding an unprotected position."""
+        times, then stops the bot, since we'd be holding an unprotected position.
+
+        Before every attempt, check whether an exit with this tag already exists
+        (the last attempt may have reached the exchange even though we got an error,
+        or we crashed right after placing it). If so, use it instead of placing a second one."""
         for attempt in range(1, max_attempts + 1):
             try:
-                order = self.exchange.create_order(self.pair, 'limit', side, amount, price)
+                existing = self.find_order_by_tag(tag)
+                if existing is not None:
+                    self.log(f"Exit {side} already on the exchange ({existing['id']}), not placing again.")
+                    return existing['id']
+                order = self.exchange.create_order(self.pair, 'limit', side, amount, price,
+                                                   self.tag_params(tag))
                 return order['id']
             except Exception as e:
                 self.log(f"Exit {side} failed (attempt {attempt}/{max_attempts}): {e}")
@@ -196,8 +223,13 @@ class GridBot:
         trade['amount'] = filled
         trade['entry_cost'] = self.order_cost(order)
         trade['entry_fee'] = self.fee_usd(order)
+        # Make the exit's tag and SAVE it before placing, so after a crash we can find it.
+        # A trade that already has a tag (crash last time) keeps it.
+        if not trade.get('exit_tag'):
+            trade['exit_tag'] = str(uuid.uuid4())
+            self.save()
         trade['exit_id'] = await self.place_exit(exit_side['side'], exit_side['amount'],
-                                                 exit_side['price'])
+                                                 exit_side['price'], trade['exit_tag'])
         trade['status'] = 'exit_open'
         self.save()
 

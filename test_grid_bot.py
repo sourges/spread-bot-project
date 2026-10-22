@@ -18,6 +18,7 @@ class FakeExchange:
         self.orders = {}
         self.next_id = 1
         self.fill_on_cancel = set()     # ids that "fill just before the cancel arrives"
+        self.lose_next_reply = False    # next order goes through, but we get an error back
 
     def create_order(self, symbol, type, side, amount, price, params=None):
         order_id = f"O{self.next_id}"
@@ -26,7 +27,11 @@ class FakeExchange:
             'id': order_id, 'side': side, 'amount': amount, 'price': price,
             'status': 'open', 'filled': 0.0, 'cost': 0.0, 'average': None,
             'fee': None, 'params': params or {},
+            'clientOrderId': (params or {}).get('clientOrderId'),
         }
+        if self.lose_next_reply:
+            self.lose_next_reply = False
+            raise ccxt.NetworkError("timed out (but the order went through)")
         return dict(self.orders[order_id])
 
     def fetch_order(self, order_id, symbol):
@@ -48,6 +53,9 @@ class FakeExchange:
     def fetch_open_orders(self, symbol):
         return [dict(o) for o in self.orders.values() if o['status'] == 'open']
 
+    def fetch_closed_orders(self, symbol):
+        return [dict(o) for o in self.orders.values() if o['status'] != 'open']
+
     # ----- test helpers -----
     def fill(self, order_id, amount=None):
         """Fill an order (fully by default). Fee is 0.3% in USD, like Kraken maker."""
@@ -66,6 +74,11 @@ class FakeExchange:
             if o['status'] == 'open' and o['side'] == side and o['price'] == price:
                 return o
         return None
+
+
+def trade_tag(bot, entry):
+    """The exit tag saved on the trade for this entry order."""
+    return [t for t in bot.trades if t['entry_id'] == entry['id']][0]['exit_tag']
 
 
 class GridBotTest(unittest.IsolatedAsyncioTestCase):
@@ -116,7 +129,8 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
 
         exit_sell = self.exchange.open_at('sell', 0.38077)
         self.assertEqual(exit_sell['amount'], 165.02)        # sells exactly what was bought
-        self.assertEqual(exit_sell['params'], {})            # exits are not post-only
+        # exits are not post-only, but carry the bot's tag
+        self.assertEqual(exit_sell['params'], {'clientOrderId': trade_tag(self.bot, buy)})
         trade = [t for t in self.bot.trades if t['entry_id'] == buy['id']][0]
         self.assertEqual(trade['status'], 'exit_open')
         self.assertEqual(trade['exit_id'], exit_sell['id'])
@@ -331,6 +345,50 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
         expected = (0.38077 - 0.36964) * 160.2 - 0.003 * 160.2 * (0.38077 + 0.36964)
         self.assertAlmostEqual(self.bot.total_profit, expected, places=6)
         self.assertEqual(self.bot.completed, 1)
+
+
+    # ---------- V2 #6: duplicate exits ----------
+
+    def orders_with_tag(self, tag):
+        return [o for o in self.exchange.orders.values() if o['clientOrderId'] == tag]
+
+    async def test_lost_reply_does_not_place_second_exit(self):
+        await self.bot.run_cycle()
+        buy = self.exchange.open_at('buy', 0.36964)
+        self.exchange.fill(buy['id'])
+        self.exchange.lose_next_reply = True        # exit reaches the exchange, reply is lost
+        await self.bot.run_cycle()
+
+        trade = [t for t in self.bot.trades if t['entry_id'] == buy['id']][0]
+        tagged = self.orders_with_tag(trade['exit_tag'])
+        self.assertEqual(len(tagged), 1)                    # one exit, not two
+        self.assertEqual(trade['exit_id'], tagged[0]['id'])
+        self.assertEqual(trade['status'], 'exit_open')
+
+    async def test_restart_after_crash_finds_existing_exit(self):
+        await self.bot.run_cycle()
+        buy = self.exchange.open_at('buy', 0.36964)
+        self.exchange.fill(buy['id'])
+        # Crash: tag saved, exit placed, but the bot died before saving exit_id.
+        trade = [t for t in self.bot.trades if t['entry_id'] == buy['id']][0]
+        trade['exit_tag'] = 'tag-1'
+        self.bot.save()
+        placed = self.exchange.create_order('CRV/USD', 'limit', 'sell', 165.02, 0.38077,
+                                            {'clientOrderId': 'tag-1'})
+
+        new_bot = self.make_bot(self.levels)
+        await new_bot.recover()
+        await new_bot.run_cycle()
+
+        self.assertEqual(len(self.orders_with_tag('tag-1')), 1)    # not placed again
+        trade = [t for t in new_bot.trades if t['entry_id'] == buy['id']][0]
+        self.assertEqual(trade['exit_id'], placed['id'])
+        self.assertEqual(trade['status'], 'exit_open')
+
+    def test_tag_params_per_exchange(self):
+        self.assertEqual(self.bot.tag_params('abc'), {'clientOrderId': 'abc'})
+        self.exchange.id = 'coinbase'
+        self.assertEqual(self.bot.tag_params('abc'), {'client_order_id': 'abc'})
 
 
 if __name__ == '__main__':
