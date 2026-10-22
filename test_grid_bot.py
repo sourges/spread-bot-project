@@ -4,7 +4,9 @@ import io
 import os
 import unittest
 import ccxt
-from grid_bot import GridBot, OrderProblem, run_bots
+from datetime import datetime
+from grid_bot import (GridBot, OrderProblem, run_bots, status_lines, seconds_until,
+                      summary_text, send_summary)
 from grid_state import load_grid_state, save_grid_state
 
 
@@ -389,6 +391,98 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bot.tag_params('abc'), {'clientOrderId': 'abc'})
         self.exchange.id = 'coinbase'
         self.assertEqual(self.bot.tag_params('abc'), {'client_order_id': 'abc'})
+
+
+    # ---------- screen block and daily summary ----------
+
+    async def do_one_long_trade(self):
+        """Buy at 0.36964 fills, then its exit at 0.38077 fills. 3 cycles."""
+        await self.bot.run_cycle()
+        buy = self.exchange.open_at('buy', 0.36964)
+        self.exchange.fill(buy['id'])
+        await self.bot.run_cycle()
+        exit_sell = self.exchange.open_at('sell', 0.38077)
+        self.exchange.fill(exit_sell['id'])
+        await self.bot.run_cycle()
+
+    def test_seconds_until(self):
+        self.assertEqual(seconds_until(9, datetime(2026, 10, 22, 8, 0)), 3600)      # 1 hour
+        self.assertEqual(seconds_until(9, datetime(2026, 10, 22, 9, 0)), 86400)     # exactly 9:00 -> tomorrow
+        self.assertEqual(seconds_until(9, datetime(2026, 10, 22, 10, 30)), 81000)   # 22.5 hours
+
+    async def test_status_line_after_first_cycle(self):
+        self.assertEqual(status_lines([self.bot], 0), ["[kraken CRV/USD] starting..."])
+        await self.bot.run_cycle()
+        now = self.bot.last_cycle
+        # first cycle: 2 longs + 1 short placed, nothing done yet
+        self.assertEqual(status_lines([self.bot], now),
+                         ["[kraken CRV/USD] Price 0.3795 | open trades: 3 | done: 0 | profit $0.0000"])
+
+    async def test_status_line_warns_when_no_cycle_for_10_min(self):
+        await self.bot.run_cycle()
+        line = status_lines([self.bot], self.bot.last_cycle + 599)[0]       # 9 min 59 s: fine
+        self.assertNotIn('⚠️', line)
+        line = status_lines([self.bot], self.bot.last_cycle + 600)[0]       # 10 min
+        self.assertTrue(line.endswith("  ⚠️ no cycle for 10 min"))
+
+    async def test_stopped_bot_shows_stopped(self):
+        await self.bot.run_cycle()
+        buy = self.exchange.open_at('buy', 0.36964)
+        self.exchange.fill(buy['id'])
+        await self.bot.run_cycle()
+        exit_sell = self.exchange.open_at('sell', 0.38077)
+        self.exchange.orders[exit_sell['id']]['status'] = 'canceled'
+
+        await self.bot.run_continuous()         # hits the OrderProblem, alerts, returns
+        self.assertEqual(self.bot.status, 'stopped')
+        self.assertEqual(status_lines([self.bot], 0), ["[kraken CRV/USD] STOPPED"])
+        self.assertIn("🛑 kraken CRV/USD: STOPPED", summary_text([self.bot], 0))
+
+    async def test_summary_after_one_trade(self):
+        await self.do_one_long_trade()
+        text = summary_text([self.bot], self.bot.last_cycle)
+        # profit by hand: 0.01113 * 165.02 = 1.83667, fees 0.003 * 165.02 * 0.75041 = 0.37150
+        # -> 1.46518 -> $1.47. After the trade: longs 0.36964 + 0.35884, short 0.38077 = 3 entries.
+        self.assertIn("kraken CRV/USD\n"
+                      "  1 done, $1.47\n"
+                      "  waiting: 3 entries, 0 exits\n"
+                      "  all time: 1 done, $1.47", text)
+        self.assertIn("📊 ALL BOTS: 1 done, $1.47 | all time $1.47", text)
+
+    def test_summary_warns_if_never_cycled(self):
+        self.assertIn("⚠️ kraken CRV/USD: no cycle yet", summary_text([self.bot], 0))
+
+    async def test_send_summary_resets_day_but_not_all_time(self):
+        await self.do_one_long_trade()
+        await send_summary([self.bot], self.bot.alert, self.bot.last_cycle)
+        self.assertTrue(any('DAILY GRID SUMMARY' in a for a in self.alerts))
+        self.assertEqual(self.bot.day_done, 0)
+        self.assertEqual(self.bot.day_profit, 0.0)
+        self.assertEqual(self.bot.completed, 1)                # all-time count kept
+
+    async def test_helpers_stop_when_bots_stop(self):
+        class BrokenExchange(FakeExchange):
+            def fetch_ticker(self, symbol):
+                raise RuntimeError("boom")
+        broken = GridBot(BrokenExchange(price=0.3795), 'CAKE/USD', self.levels, 61, 2, 20,
+                         self.bot.send, count=2, check_interval=0,
+                         state_file='test_state_cake.json', log_file='test_log_cake.txt')
+        stopped = []
+
+        async def helper():
+            try:
+                await asyncio.sleep(100)
+            except asyncio.CancelledError:
+                stopped.append(True)
+                raise
+        try:
+            await asyncio.wait_for(run_bots([broken], helpers=[helper()]), timeout=1)
+            await asyncio.sleep(0)              # let the cancel reach the helper
+        finally:
+            for f in ('test_state_cake.json', 'test_log_cake.txt'):
+                if os.path.exists(f):
+                    os.remove(f)
+        self.assertEqual(stopped, [True])
 
 
 if __name__ == '__main__':

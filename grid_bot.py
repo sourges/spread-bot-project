@@ -1,5 +1,7 @@
 import asyncio
+import time
 import uuid
+from datetime import datetime, timedelta
 import ccxt
 from grid import plan_entries, exit_order, order_amount, bot_name
 from grid_state import save_grid_state, load_grid_state
@@ -46,6 +48,13 @@ class GridBot:
         self.cancelling = set()     # entry ids the bot asked to cancel (Coinbase cancels lag)
         self.total_profit = 0.0
         self.completed = 0
+
+        # for the screen and the daily summary
+        self.status = 'starting'    # 'running' or 'stopped' later
+        self.status_line = None     # latest "Price ... | open trades ..." text
+        self.last_cycle = None      # time.monotonic() of the last cycle that finished
+        self.day_done = 0           # trades done since the last daily summary
+        self.day_profit = 0.0
 
     def log(self, message):
         """Terminal line, labelled like the alerts: [kraken CRV/USD] ..."""
@@ -260,6 +269,8 @@ class GridBot:
 
         self.total_profit += profit
         self.completed += 1
+        self.day_done += 1
+        self.day_profit += profit
         self.remove(trade)
 
         log_trade(f"{trade['side']} exit (profit {profit:.4f})", trade['exit_price'],
@@ -322,12 +333,15 @@ class GridBot:
         for trade in plan['cancel']:                              # 2. cancel far entries
             await self.cancel_entry(trade)
         await self.place_entries(price)                           # 3. re-plan, then place
-        self.log(f"Price {price} | open trades: {len(self.trades)} | "
-              f"done: {self.completed} | profit ${self.total_profit:.4f}")
+        # Not printed here: print_status() prints every bot's line together, once a minute.
+        self.status_line = (f"Price {price} | open trades: {len(self.trades)} | "
+                            f"done: {self.completed} | profit ${self.total_profit:.4f}")
+        self.last_cycle = time.monotonic()
 
     async def run_continuous(self):
         try:
             await self.recover()        # inside try, so a recovery problem sends 🛑
+            self.status = 'running'
             while True:
                 try:
                     await self.run_cycle()
@@ -336,25 +350,125 @@ class GridBot:
                     self.log(f"Network problem, retrying next cycle: {e}")
                 await asyncio.sleep(self.check_interval)
         except OrderProblem as e:
+            self.status = 'stopped'
             await self.alert(f"🛑 GRID BOT STOPPED - order problem\n{e}\n"
                              "Check the exchange before restarting.")
             print(e)
         except asyncio.CancelledError:
+            self.status = 'stopped'
             await self.alert(f"⏹️ GRID BOT STOPPED\nOpen trades: {len(self.trades)}\n"
                              f"Done: {self.completed} | Profit: ${self.total_profit:.4f}")
             raise
         except Exception as e:
             # Anything unexpected: stop instead of looping blindly with real money.
+            self.status = 'stopped'
             await self.alert(f"🛑 GRID BOT STOPPED - unexpected error\n{type(e).__name__}: {e}")
             raise
 
 
-async def run_bots(bots):
+async def run_bots(bots, helpers=()):
     """Run several grid bots at the same time.
 
     Each bot stops on its own problems without stopping the others:
     return_exceptions=True means one bot's crash is collected instead of
     cancelling the rest. Ctrl+C still stops them all, and each sends its
-    own STOPPED alert."""
-    await asyncio.gather(*(bot.run_continuous() for bot in bots),
-                         return_exceptions=True)
+    own STOPPED alert.
+
+    helpers: extra loops that run alongside the bots (screen printout,
+    daily summary). They stop when the bots stop."""
+    helper_tasks = [asyncio.create_task(h) for h in helpers]
+    try:
+        await asyncio.gather(*(bot.run_continuous() for bot in bots),
+                             return_exceptions=True)
+    finally:
+        for task in helper_tasks:
+            task.cancel()
+
+
+# ---------- once a minute: one block on screen ----------
+
+def minutes_since(bot, now):
+    """Whole minutes since the bot's last finished cycle, or None if it never finished one."""
+    if bot.last_cycle is None:
+        return None
+    return int((now - bot.last_cycle) // 60)
+
+
+def status_lines(bots, now, stale_minutes=10):
+    """One screen line per bot."""
+    lines = []
+    for bot in bots:
+        if bot.status == 'stopped':
+            lines.append(f"[{bot.label}] STOPPED")
+        elif bot.status_line is None:
+            lines.append(f"[{bot.label}] starting...")
+        else:
+            line = f"[{bot.label}] {bot.status_line}"
+            age = minutes_since(bot, now)
+            if age >= stale_minutes:
+                line += f"  ⚠️ no cycle for {age} min"
+            lines.append(line)
+    return lines
+
+
+async def print_status(bots, interval):
+    """Every interval seconds: a dashed line with the time, then one line per bot."""
+    while True:
+        await asyncio.sleep(interval)
+        print(f"{'-' * 30} {datetime.now():%H:%M:%S} {'-' * 30}")
+        for line in status_lines(bots, time.monotonic()):
+            print(line)
+
+
+# ---------- once a day: Telegram summary ----------
+
+def seconds_until(hour, now):
+    """Seconds from now until the next time the clock shows hour:00."""
+    target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
+
+
+def summary_text(bots, now, stale_minutes=10):
+    lines = ["📋 DAILY GRID SUMMARY (since last summary)"]
+    day_done = 0
+    day_profit = 0.0
+    total_profit = 0.0
+    for bot in bots:
+        entries = sum(1 for t in bot.trades if t['status'] == 'entry_open')
+        exits = sum(1 for t in bot.trades if t['status'] == 'exit_open')
+        if bot.status == 'stopped':
+            head = f"🛑 {bot.label}: STOPPED"
+        else:
+            head = f"{bot.label}"
+            age = minutes_since(bot, now)
+            if age is None or age >= stale_minutes:
+                head = f"⚠️ {bot.label}: " + ("no cycle yet" if age is None else f"no cycle for {age} min")
+        lines.append(f"\n{head}\n"
+                     f"  {bot.day_done} done, ${bot.day_profit:.2f}\n"
+                     f"  waiting: {entries} entries, {exits} exits\n"
+                     f"  all time: {bot.completed} done, ${bot.total_profit:.2f}")
+        day_done += bot.day_done
+        day_profit += bot.day_profit
+        total_profit += bot.total_profit
+    lines.append(f"\n📊 ALL BOTS: {day_done} done, ${day_profit:.2f} | all time ${total_profit:.2f}")
+    return "\n".join(lines)
+
+
+async def send_summary(bots, alert, now):
+    """Send the summary, then start counting the next day from zero."""
+    await alert(summary_text(bots, now))
+    for bot in bots:
+        bot.day_done = 0
+        bot.day_profit = 0.0
+
+
+async def daily_summary(bots, alert, hour):
+    """Sleep until hour:00 on the PC's clock, send the summary, repeat."""
+    while True:
+        await asyncio.sleep(seconds_until(hour, datetime.now()))
+        try:
+            await send_summary(bots, alert, time.monotonic())
+        except Exception as e:
+            print(f"[SUMMARY ERROR] {e}")     # never let the summary stop the bots

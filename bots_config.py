@@ -23,6 +23,7 @@ BOTS = [
 
 
 CHECK_INTERVAL = 60     # seconds between cycles, for every bot
+SUMMARY_HOUR = 9        # daily Telegram summary at this hour (0-23, the PC's clock)
 
 # DRY_RUN = True: connect, show each bot's plan, place NOTHING.
 DRY_RUN = False

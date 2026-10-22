@@ -4,8 +4,8 @@ import ccxt
 from dotenv import load_dotenv
 from telegram import Bot
 from grid import geometric_levels, tick_to_decimals, plan_entries, order_amount, check_config
-from grid_bot import GridBot, run_bots
-from bots_config import BOTS, CHECK_INTERVAL, DRY_RUN
+from grid_bot import GridBot, run_bots, print_status, daily_summary
+from bots_config import BOTS, CHECK_INTERVAL, DRY_RUN, SUMMARY_HOUR
 
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -100,7 +100,9 @@ async def main():
         return
 
     print(f"\n🚀 Running {len(bots)} grid bot(s). Ctrl+C to stop all.")
-    await run_bots(bots)
+    print(f"   Daily summary at {SUMMARY_HOUR}:00 (this PC's clock).")
+    await run_bots(bots, helpers=[print_status(bots, CHECK_INTERVAL),
+                                  daily_summary(bots, alert, SUMMARY_HOUR)])
 
 
 if __name__ == '__main__':
