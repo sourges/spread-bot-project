@@ -17,7 +17,7 @@ BOTS = [
 
     {'exchange': 'coinbase', 'pair': 'CRV/USDC',
     'lower': 0.2, 'upper': 1.2, 'levels': 61,
-    'usd_per_entry': 8, 'count': 2},
+    'usd_per_entry': 60, 'count': 2},
 ]
 
 
