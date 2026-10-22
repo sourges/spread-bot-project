@@ -7,9 +7,17 @@ import asyncio
 # Load environment variables from .env file
 load_dotenv()
 
-# Get credentials from .env
-KRAKEN_KEY = os.getenv('KRAKEN_API_KEY')
-KRAKEN_SECRET = os.getenv('KRAKEN_API_SECRET')
+# ===== SETTINGS (the only place to change them) =====
+PAIR = 'USDG/USD'
+BUY_PRICE = 0.9999
+SELL_PRICE = 1.0000
+AMOUNT = 100            # coins per trade
+CHECK_INTERVAL = 60     # seconds between checks
+# =====================================================
+
+# Get credentials from .env (spread bot has its own Kraken key)
+KRAKEN_KEY = os.getenv('KRAKEN_SPREAD_API_KEY')
+KRAKEN_SECRET = os.getenv('KRAKEN_SPREAD_API_SECRET')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
@@ -24,8 +32,8 @@ async def main():
     if not all([KRAKEN_KEY, KRAKEN_SECRET, TELEGRAM_TOKEN, CHAT_ID]):
         print("❌ ERROR: Missing credentials in .env file!")
         print("Make sure you have:")
-        print("  - KRAKEN_API_KEY")
-        print("  - KRAKEN_API_SECRET")
+        print("  - KRAKEN_SPREAD_API_KEY")
+        print("  - KRAKEN_SPREAD_API_SECRET")
         print("  - TELEGRAM_BOT_TOKEN")
         print("  - TELEGRAM_CHAT_ID")
         exit()
@@ -58,11 +66,11 @@ async def main():
         exit()
 
     # Test by fetching current price
-    print("\nFetching USDG/USD price...")
+    print(f"\nFetching {PAIR} price...")
     try:
-        ticker = exchange.fetch_ticker('USDG/USD')
+        ticker = exchange.fetch_ticker(PAIR)
         current_price = ticker['last']
-        print(f"✅ Current USDG/USD price: ${current_price}")
+        print(f"✅ Current {PAIR} price: ${current_price}")
     except Exception as e:
         print(f"❌ Failed to fetch price: {e}")
         exit()
@@ -74,30 +82,24 @@ async def main():
     # Create SpreadBot instance
     bot = SpreadBot(
         exchange=exchange,
-        pair='USDG/USD',
-        buy_price=0.9999,
-        sell_price=1.0000,
-        amount=100,
+        pair=PAIR,
+        buy_price=BUY_PRICE,
+        sell_price=SELL_PRICE,
+        amount=AMOUNT,
         telegram_token=TELEGRAM_TOKEN,
         chat_id=CHAT_ID,
-        check_interval=60
+        check_interval=CHECK_INTERVAL
     )
 
-    # Ask user before running
-    print("\n⚠️  WARNING: This will place REAL trades on Kraken!")
-    print(f"   Trading pair: USDG/USD")
-    print(f"   Buy price: 0.9999")
-    print(f"   Sell price: 1.0000")
-    print(f"   Amount per trade: 100 USDG")
-    response = input("\nDo you want to start the bot? (yes/no): ")
-
-    if response.lower() == 'yes':
-        print("\n🚀 Starting SpreadBot...")
-        print("(Press Ctrl+C to stop the bot)\n")
-        await bot.run_continuous()
-    else:
-        print("Bot cancelled. Exiting.")
-        exit()
+    coin = PAIR.split('/')[0]
+    print("\n⚠️  LIVE: placing REAL trades on Kraken")
+    print(f"   Trading pair: {PAIR}")
+    print(f"   Buy price: {BUY_PRICE}")
+    print(f"   Sell price: {SELL_PRICE}")
+    print(f"   Amount per trade: {AMOUNT} {coin}")
+    print("\n🚀 Starting SpreadBot...")
+    print("(Press Ctrl+C to stop the bot)\n")
+    await bot.run_continuous()
 
 if __name__ == "__main__":
     asyncio.run(main())
