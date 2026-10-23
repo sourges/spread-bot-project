@@ -158,6 +158,7 @@ env.bak/
 venv.bak/
 trades.txt
 state.json
+spread_totals.json
 grid_state.json
 grid_state.json.tmp
 grid_trades.txt

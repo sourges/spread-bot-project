@@ -15,6 +15,18 @@ def load_state(filename = 'state.json'):
     except FileNotFoundError:
         return None
 
-# {"waiting_for": "sell", "order_id": "O6YHBH-4ATPI-7GSK2N"}
-#save_state("sell", "O6YHBH-4ATPI-7GSK2N")
-answer = load_state()
+
+def save_totals(total_profit, total_trades, filename='spread_totals.json'):
+    """Profit and trade count, kept in their own file so they survive restarts."""
+    with open(filename, 'w') as f:
+        json.dump({'total_profit': total_profit, 'total_trades': total_trades}, f)
+
+
+def load_totals(filename='spread_totals.json'):
+    """Return (total_profit, total_trades), or (0.0, 0) if nothing saved yet."""
+    try:
+        with open(filename) as f:
+            totals = json.load(f)
+            return totals['total_profit'], totals['total_trades']
+    except FileNotFoundError:
+        return 0.0, 0

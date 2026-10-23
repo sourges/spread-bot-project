@@ -1,7 +1,8 @@
 import asyncio
+from datetime import datetime
 from telegram import Bot
 from log_trade import log_trade
-from state import save_state, load_state
+from state import save_state, load_state, save_totals, load_totals
 
 
 class OrderProblem(Exception):
@@ -11,7 +12,7 @@ class OrderProblem(Exception):
 
 class SpreadBot:
     def __init__(self, exchange, pair, buy_price, sell_price, amount, 
-                 telegram_token, chat_id, check_interval=60):
+                 telegram_token, chat_id, check_interval=60, totals_file='spread_totals.json'):
         """
         Initialize the spread bot
         """
@@ -26,8 +27,16 @@ class SpreadBot:
         
         self.buy_order_id = None
         self.sell_order_id = None
-        self.total_profit = 0
-        self.total_trades = 0
+        self.totals_file = totals_file
+        self.label = f"{exchange.id} {pair}"     # 'kraken USDG/USD'
+        # saved totals, so a restart doesn't start counting from 0 again
+        self.total_profit, self.total_trades = load_totals(totals_file)
+
+    def status_line(self, waiting_for, price, now):
+        """One screen line per check, e.g.
+        [kraken USDG/USD] 10:43:12 | waiting for buy @ 0.9999 | done: 3 | profit $0.0300"""
+        return (f"[{self.label}] {now:%H:%M:%S} | waiting for {waiting_for} @ {price} | "
+                f"done: {self.total_trades} | profit ${self.total_profit:.4f}")
         
     async def place_buy_order(self):
         """
@@ -80,7 +89,7 @@ class SpreadBot:
                 # The order is dead and will never fill. Stop instead of waiting forever.
                 raise OrderProblem(f"Buy order {self.buy_order_id} was {order['status']}.")
             else:
-                print(f"Buy order still open... Status: {order['status']}")
+                print(self.status_line('buy', self.buy_price, datetime.now()))
                 return False
         except OrderProblem:
             # Let this one pass through so run_continuous can stop the bot.
@@ -136,6 +145,7 @@ class SpreadBot:
                 
                 self.total_profit += profit
                 self.total_trades += 1
+                save_totals(self.total_profit, self.total_trades, self.totals_file)
 
                 # save trade to log
                 log_trade('sell', avg_price, filled_amount, self.sell_order_id)
@@ -148,7 +158,7 @@ class SpreadBot:
                 # The order is dead and will never fill. Stop instead of waiting forever.
                 raise OrderProblem(f"Sell order {self.sell_order_id} was {order['status']}.")
             else:
-                print(f"Sell order still open... Status: {order['status']}")
+                print(self.status_line('sell', self.sell_price, datetime.now()))
                 return False
         except OrderProblem:
             # Let this one pass through so run_continuous can stop the bot.
