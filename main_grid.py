@@ -4,7 +4,7 @@ import ccxt
 from dotenv import load_dotenv
 from telegram import Bot
 from grid import geometric_levels, tick_to_decimals, plan_entries, order_amount, check_config
-from grid_bot import GridBot, run_bots, print_status, daily_summary
+from grid_bot import GridBot, run_bots, print_status, daily_summary, check_funding
 from bots_config import BOTS, CHECK_INTERVAL, DRY_RUN, SUMMARY_HOUR
 
 load_dotenv()
@@ -94,6 +94,8 @@ async def main():
         if name not in exchanges:
             exchanges[name] = make_exchange(name)
         bots.append(build_bot(exchanges[name], cfg, alert))
+
+    await check_funding(bots, alert)
 
     if DRY_RUN:
         print("\nDRY_RUN is on. Nothing was placed. Set DRY_RUN = False in bots_config.py to trade.")

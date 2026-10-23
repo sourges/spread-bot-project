@@ -200,6 +200,59 @@ def check_config(bots):
             raise ValueError(f"{name}: usd_per_entry and count must be positive")
 
 
+def open_positions(trades, price):
+    """What the filled trades hold right now (before exit fees).
+
+    long:  we bought coins and wait to sell them. Worth amount * price now.
+    short: we sold coins and wait to buy them back. Costs amount * price now.
+    open_pnl: what we'd make (or lose) if every open trade closed at `price`."""
+    longs = [t for t in trades if t['status'] == 'exit_open' and t['side'] == 'long']
+    shorts = [t for t in trades if t['status'] == 'exit_open' and t['side'] == 'short']
+    # float(): old saved trades may hold numbers as text
+    long_amount = sum(float(t['amount']) for t in longs)
+    long_cost = sum(float(t['entry_cost']) for t in longs)
+    short_amount = sum(float(t['amount']) for t in shorts)
+    short_proceeds = sum(float(t['entry_cost']) for t in shorts)
+    long_value = long_amount * price
+    short_buyback = short_amount * price
+    return {
+        'longs': len(longs), 'long_amount': long_amount,
+        'long_cost': long_cost, 'long_value': long_value,
+        'shorts': len(shorts), 'short_amount': short_amount,
+        'short_proceeds': short_proceeds, 'short_buyback': short_buyback,
+        'open_pnl': (long_value - long_cost) + (short_proceeds - short_buyback),
+    }
+
+
+def funding_needs(levels, price, trades, usd_per_entry):
+    """Money this bot needs on the exchange to cover its WHOLE range.
+
+    quote: USD for a long entry at every free level below the price,
+           plus USD locked in open short exits (buy orders).
+    coin:  coins for a short entry at every free level above the price,
+           plus coins locked in open long exits (sell orders).
+    Levels used by filled trades are skipped (their money is in the exits).
+    The top level can't be a long (no exit above it); the bottom can't be a short."""
+    taken = taken_levels(trades)
+    quote = 0.0
+    coin = 0.0
+    for i, level in enumerate(levels):
+        if level in taken:
+            continue
+        if level < price and i < len(levels) - 1:
+            quote += usd_per_entry
+        elif level > price and i > 0:
+            coin += usd_per_entry / level
+    for t in trades:
+        if t['status'] != 'exit_open':
+            continue
+        if t['side'] == 'long':
+            coin += float(t['amount'])
+        else:
+            quote += float(t['amount']) * float(t['exit_price'])
+    return {'quote': quote, 'coin': coin}
+
+
 if __name__ == '__main__':
     levels = [0.32829, 0.33818, 0.34835, 0.35884, 0.36964, 0.38077]
     current_price = 0.3795

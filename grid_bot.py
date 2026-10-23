@@ -3,7 +3,8 @@ import time
 import uuid
 from datetime import datetime, timedelta
 import ccxt
-from grid import plan_entries, exit_order, order_amount, bot_name
+from grid import (plan_entries, exit_order, order_amount, bot_name,
+                  open_positions, funding_needs)
 from grid_state import save_grid_state, load_grid_state
 from log_trade import log_trade
 
@@ -55,6 +56,8 @@ class GridBot:
         self.last_cycle = None      # time.monotonic() of the last cycle that finished
         self.day_done = 0           # trades done since the last daily summary
         self.day_profit = 0.0
+        self.last_price = None      # price from the last cycle (for the summary)
+        self.funds_alerted = set()  # sides ('long'/'short') already alerted for low funds
 
     def log(self, message):
         """Terminal line, labelled like the alerts: [kraken CRV/USD] ..."""
@@ -314,11 +317,22 @@ class GridBot:
                 trade['entry_id'] = self.place_entry(side, amount, trade['entry_price'])
             except ccxt.NetworkError:
                 raise                           # let the main loop wait and retry
+            except ccxt.InsufficientFunds as e:
+                # Alert once per side, then stay quiet until an entry on that side works.
+                if trade['side'] not in self.funds_alerted:
+                    self.funds_alerted.add(trade['side'])
+                    currency = self.quote if trade['side'] == 'long' else self.coin
+                    await self.alert(f"⚠️ Not enough {currency} for {trade['side']} entry "
+                                     f"@ {trade['entry_price']}. Will keep trying every cycle "
+                                     f"(no more alerts until a {trade['side']} entry works).")
+                self.log(f"Not enough funds for {trade['side']} entry @ {trade['entry_price']}: {e}")
+                continue
             except Exception as e:
                 # e.g. post-only rejected because price moved. Nothing is at risk,
                 # so just try again next cycle.
                 self.log(f"Could not place {trade['side']} entry @ {trade['entry_price']}: {e}")
                 continue
+            self.funds_alerted.discard(trade['side'])      # funds are fine again
             trade['amount'] = amount
             self.trades.append(trade)
             self.save()
@@ -337,6 +351,7 @@ class GridBot:
         self.status_line = (f"Price {price} | open trades: {len(self.trades)} | "
                             f"done: {self.completed} | profit ${self.total_profit:.4f}")
         self.last_cycle = time.monotonic()
+        self.last_price = price
 
     async def run_continuous(self):
         try:
@@ -430,11 +445,18 @@ def seconds_until(hour, now):
     return (target - now).total_seconds()
 
 
+def money(x):
+    """+$1.25 or -$0.44"""
+    sign = '-' if x < 0 else '+'
+    return f"{sign}${abs(x):.2f}"
+
+
 def summary_text(bots, now, stale_minutes=10):
     lines = ["📋 DAILY GRID SUMMARY (since last summary)"]
     day_done = 0
     day_profit = 0.0
     total_profit = 0.0
+    open_pnl = 0.0
     for bot in bots:
         entries = sum(1 for t in bot.trades if t['status'] == 'entry_open')
         exits = sum(1 for t in bot.trades if t['status'] == 'exit_open')
@@ -449,10 +471,23 @@ def summary_text(bots, now, stale_minutes=10):
                      f"  {bot.day_done} done, ${bot.day_profit:.2f}\n"
                      f"  waiting: {entries} entries, {exits} exits\n"
                      f"  all time: {bot.completed} done, ${bot.total_profit:.2f}")
+        if bot.last_price is not None:
+            held = open_positions(bot.trades, bot.last_price)
+            open_pnl += held['open_pnl']
+            if held['longs']:
+                lines.append(f"  holding: {held['longs']} longs, {held['long_amount']:g} {bot.coin}, "
+                             f"cost ${held['long_cost']:.2f}, now ${held['long_value']:.2f} "
+                             f"({money(held['long_value'] - held['long_cost'])})")
+            if held['shorts']:
+                lines.append(f"  shorts: {held['shorts']}, {held['short_amount']:g} {bot.coin} "
+                             f"sold for ${held['short_proceeds']:.2f}, buy back now "
+                             f"${held['short_buyback']:.2f} "
+                             f"({money(held['short_proceeds'] - held['short_buyback'])})")
         day_done += bot.day_done
         day_profit += bot.day_profit
         total_profit += bot.total_profit
-    lines.append(f"\n📊 ALL BOTS: {day_done} done, ${day_profit:.2f} | all time ${total_profit:.2f}")
+    lines.append(f"\n📊 ALL BOTS: {day_done} done, ${day_profit:.2f} | all time ${total_profit:.2f}"
+                 f"\n   open trades if closed now: {money(open_pnl)}")
     return "\n".join(lines)
 
 
@@ -472,3 +507,55 @@ async def daily_summary(bots, alert, hour):
             await send_summary(bots, alert, time.monotonic())
         except Exception as e:
             print(f"[SUMMARY ERROR] {e}")     # never let the summary stop the bots
+
+
+# ---------- at startup: is the whole range funded? ----------
+
+def funding_report(rows, balances):
+    """rows: one per bot, (exchange_id, label, quote, coin, needs) where needs comes
+    from funding_needs(). balances: {exchange_id: {currency: total balance}}.
+    Bots on the same exchange share money, so needs are added up per currency.
+    Returns (lines to print, list of shortfall lines)."""
+    lines = []
+    totals = {}             # (exchange_id, currency) -> amount needed by all bots
+    for ex, label, quote, coin, needs in rows:
+        lines.append(f"  {label}: whole range needs {needs['quote']:,.2f} {quote} "
+                     f"and {needs['coin']:,.2f} {coin}")
+        totals[(ex, quote)] = totals.get((ex, quote), 0.0) + needs['quote']
+        totals[(ex, coin)] = totals.get((ex, coin), 0.0) + needs['coin']
+    short = []
+    for (ex, currency), needed in totals.items():
+        have = balances.get(ex, {}).get(currency) or 0.0
+        if have < needed:
+            short.append(f"{ex} {currency}: need {needed:,.2f}, have {have:,.2f} "
+                         f"(short {needed - have:,.2f})")
+    return lines, short
+
+
+async def check_funding(bots, alert):
+    """Print what each bot's whole range needs vs. what the exchange holds.
+    Alerts once if something is short. Never stops trading: it's a warning only.
+    Other things using the same money (spread bot, DCA, 3commas) aren't counted."""
+    try:
+        rows = []
+        exchanges = {}
+        for bot in bots:
+            state = load_grid_state(bot.state_file)
+            trades = state['trades'] if state else []
+            levels = state['levels'] if state else bot.levels
+            price = bot.exchange.fetch_ticker(bot.pair)['last']
+            needs = funding_needs(levels, price, trades, bot.usd_per_entry)
+            rows.append((bot.exchange.id, bot.label, bot.quote, bot.coin, needs))
+            exchanges[bot.exchange.id] = bot.exchange
+        balances = {name: ex.fetch_balance()['total'] for name, ex in exchanges.items()}
+        lines, short = funding_report(rows, balances)
+        print("\n💰 Funding check (whole range, includes open exits):")
+        for line in lines:
+            print(line)
+        if short:
+            await alert("⚠️ FUNDING: not enough to cover the whole range\n" + "\n".join(short)
+                        + "\nBots still run; entries will fail once the money runs out.")
+        else:
+            print("  ✅ every range is fully funded")
+    except Exception as e:
+        print(f"⚠️ Funding check failed ({e}). Bots start anyway.")

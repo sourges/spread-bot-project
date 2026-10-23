@@ -1,7 +1,7 @@
 import unittest
 from grid import grid_levels, split_levels, centered_grid, tick_to_decimals, geometric_levels, free_levels_below, free_levels_above, exit_order, neighbor_level, live_entries, plan_entries
 
-from grid import order_amount, bot_name, check_config
+from grid import order_amount, bot_name, check_config, open_positions, funding_needs
 
 
 class LevelTest(unittest.TestCase):
@@ -340,6 +340,70 @@ class LevelTest(unittest.TestCase):
                'levels': 71, 'count': 2}               # no usd_per_entry
         with self.assertRaises(ValueError):
             check_config([bot])
+
+
+    # ---------- open_positions ----------
+
+    def test_open_positions_longs_and_shorts(self):
+        trades = [
+            {'side': 'long', 'status': 'exit_open', 'amount': 100, 'entry_cost': 30.0},
+            {'side': 'long', 'status': 'exit_open', 'amount': 50, 'entry_cost': 16.0},
+            {'side': 'short', 'status': 'exit_open', 'amount': 20, 'entry_cost': 8.0},
+            {'side': 'long', 'status': 'entry_open', 'amount': 999, 'entry_cost': None},  # not filled: ignored
+        ]
+        held = open_positions(trades, 0.3)
+        self.assertEqual(held['longs'], 2)
+        self.assertEqual(held['long_amount'], 150)          # 100 + 50
+        self.assertEqual(held['long_cost'], 46.0)           # 30 + 16
+        self.assertAlmostEqual(held['long_value'], 45.0)    # 150 * 0.3
+        self.assertEqual(held['shorts'], 1)
+        self.assertAlmostEqual(held['short_buyback'], 6.0)  # 20 * 0.3
+        self.assertAlmostEqual(held['open_pnl'], 1.0)       # (45 - 46) + (8 - 6)
+
+    def test_open_positions_nothing_held(self):
+        held = open_positions([], 0.3)
+        self.assertEqual(held['open_pnl'], 0)
+
+    def test_open_positions_numbers_as_text(self):
+        trades = [{'side': 'long', 'status': 'exit_open', 'amount': '10', 'entry_cost': '3'}]
+        self.assertAlmostEqual(open_positions(trades, 0.5)['open_pnl'], 2.0)   # 10*0.5 - 3
+
+    # ---------- funding_needs ----------
+    # levels 0.1 .. 0.5, price 0.25, $10 per entry
+
+    def test_funding_needs_no_trades(self):
+        needs = funding_needs([0.1, 0.2, 0.3, 0.4, 0.5], 0.25, [], 10)
+        self.assertEqual(needs['quote'], 20)                            # longs at 0.1 and 0.2
+        self.assertAlmostEqual(needs['coin'], 10/0.3 + 10/0.4 + 10/0.5) # 33.33 + 25 + 20
+
+    def test_funding_needs_held_long(self):
+        trades = [{'side': 'long', 'status': 'exit_open', 'entry_price': 0.2,
+                   'exit_price': 0.3, 'amount': 50}]
+        needs = funding_needs([0.1, 0.2, 0.3, 0.4, 0.5], 0.25, trades, 10)
+        self.assertEqual(needs['quote'], 10)                    # only 0.1 is free below
+        self.assertAlmostEqual(needs['coin'], 25 + 20 + 50)     # shorts at 0.4, 0.5 + 50 coins in the exit
+
+    def test_funding_needs_held_short(self):
+        trades = [{'side': 'short', 'status': 'exit_open', 'entry_price': 0.3,
+                   'exit_price': 0.2, 'amount': 40}]
+        needs = funding_needs([0.1, 0.2, 0.3, 0.4, 0.5], 0.25, trades, 10)
+        self.assertAlmostEqual(needs['quote'], 10 + 8)          # long at 0.1 + buy back 40 @ 0.2
+        self.assertAlmostEqual(needs['coin'], 25 + 20)          # shorts at 0.4, 0.5
+
+    def test_funding_needs_skips_bottom_level_for_shorts(self):
+        needs = funding_needs([0.1, 0.2, 0.3, 0.4, 0.5], 0.05, [], 10)
+        self.assertEqual(needs['quote'], 0)
+        self.assertAlmostEqual(needs['coin'], 50 + 10/0.3 + 25 + 20)   # 0.1 can't be a short
+
+    def test_funding_needs_skips_top_level_for_longs(self):
+        needs = funding_needs([0.1, 0.2, 0.3, 0.4, 0.5], 0.6, [], 10)
+        self.assertEqual(needs['quote'], 40)            # 0.1-0.4; 0.5 has no exit above it
+        self.assertEqual(needs['coin'], 0)
+
+    def test_funding_needs_live_entries_do_not_take_levels(self):
+        trades = [{'side': 'long', 'status': 'entry_open', 'entry_price': 0.2,
+                   'exit_price': 0.3, 'amount': 50}]
+        self.assertEqual(funding_needs([0.1, 0.2, 0.3, 0.4, 0.5], 0.25, trades, 10)['quote'], 20)
 
 
 if __name__ == '__main__':

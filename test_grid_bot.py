@@ -6,7 +6,7 @@ import unittest
 import ccxt
 from datetime import datetime
 from grid_bot import (GridBot, OrderProblem, run_bots, status_lines, seconds_until,
-                      summary_text, send_summary)
+                      summary_text, send_summary, funding_report, check_funding)
 from grid_state import load_grid_state, save_grid_state
 
 
@@ -21,8 +21,12 @@ class FakeExchange:
         self.next_id = 1
         self.fill_on_cancel = set()     # ids that "fill just before the cancel arrives"
         self.lose_next_reply = False    # next order goes through, but we get an error back
+        self.no_funds_for = set()       # 'buy'/'sell': entries on that side fail for lack of funds
+        self.balance = {}               # what fetch_balance() reports as 'total'
 
     def create_order(self, symbol, type, side, amount, price, params=None):
+        if side in self.no_funds_for and (params or {}).get('postOnly'):
+            raise ccxt.InsufficientFunds("EOrder:Insufficient funds")
         order_id = f"O{self.next_id}"
         self.next_id += 1
         self.orders[order_id] = {
@@ -54,6 +58,9 @@ class FakeExchange:
 
     def fetch_open_orders(self, symbol):
         return [dict(o) for o in self.orders.values() if o['status'] == 'open']
+
+    def fetch_balance(self):
+        return {'total': dict(self.balance)}
 
     def fetch_closed_orders(self, symbol):
         return [dict(o) for o in self.orders.values() if o['status'] != 'open']
@@ -483,6 +490,82 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
                 if os.path.exists(f):
                     os.remove(f)
         self.assertEqual(stopped, [True])
+
+
+    # ---------- held coins, low funds, funding check ----------
+
+    async def test_summary_shows_held_long(self):
+        await self.bot.run_cycle()
+        buy = self.exchange.open_at('buy', 0.36964)
+        self.exchange.fill(buy['id'])
+        await self.bot.run_cycle()
+        text = summary_text([self.bot], self.bot.last_cycle)
+        # cost 165.02 * 0.36964 = 60.998 -> $61.00, now 165.02 * 0.3795 = 62.625 -> $62.63
+        self.assertIn("  holding: 1 longs, 165.02 CRV, cost $61.00, now $62.63 (+$1.63)", text)
+        self.assertIn("open trades if closed now: +$1.63", text)
+
+    async def test_summary_shows_held_short(self):
+        await self.bot.run_cycle()
+        sell = self.exchange.open_at('sell', 0.38077)
+        self.exchange.fill(sell['id'])
+        await self.bot.run_cycle()
+        text = summary_text([self.bot], self.bot.last_cycle)
+        # sold 160.2 * 0.38077 = 60.999 -> $61.00, buy back 160.2 * 0.3795 = 60.796 -> $60.80
+        self.assertIn("  shorts: 1, 160.2 CRV sold for $61.00, buy back now $60.80 (+$0.20)", text)
+
+    async def test_low_funds_alerts_once_per_side(self):
+        self.exchange.no_funds_for = {'buy'}
+        await self.bot.run_cycle()
+        await self.bot.run_cycle()
+        low = [a for a in self.alerts if 'Not enough USD' in a]
+        self.assertEqual(len(low), 1)                               # once, not every cycle
+        self.assertIsNone(self.exchange.open_at('buy', 0.36964))    # no buys placed
+        self.assertIsNotNone(self.exchange.open_at('sell', 0.38077))  # sells unaffected
+
+        self.exchange.no_funds_for = set()                          # money arrives
+        await self.bot.run_cycle()
+        self.assertIsNotNone(self.exchange.open_at('buy', 0.36964))
+        self.assertNotIn('long', self.bot.funds_alerted)            # ready to alert again
+
+    def test_funding_report_adds_up_bots_on_same_exchange(self):
+        rows = [('kraken', 'kraken A', 'USD', 'CRV', {'quote': 100, 'coin': 50}),
+                ('kraken', 'kraken B', 'USD', 'CAKE', {'quote': 60, 'coin': 5})]
+        balances = {'kraken': {'USD': 150, 'CRV': 50, 'CAKE': 4}}
+        lines, short = funding_report(rows, balances)
+        self.assertEqual(lines[0], "  kraken A: whole range needs 100.00 USD and 50.00 CRV")
+        # USD: 100 + 60 = 160 > 150. CRV: 50 = 50, fine. CAKE: 5 > 4.
+        self.assertEqual(short, ["kraken USD: need 160.00, have 150.00 (short 10.00)",
+                                 "kraken CAKE: need 5.00, have 4.00 (short 1.00)"])
+
+    def test_funding_report_missing_currency_counts_as_zero(self):
+        rows = [('coinbase', 'c', 'USDC', 'CRV', {'quote': 10, 'coin': 0})]
+        lines, short = funding_report(rows, {'coinbase': {}})
+        self.assertEqual(short, ["coinbase USDC: need 10.00, have 0.00 (short 10.00)"])
+
+    async def test_check_funding_alerts_when_short(self):
+        # no trades yet, price 0.3795: longs at the 5 levels below = 5 * 61 = 305 USD,
+        # short at 0.38077 = 61 / 0.38077 = 160.20 CRV
+        self.exchange.balance = {'USD': 300, 'CRV': 1000}
+        with contextlib.redirect_stdout(io.StringIO()):
+            await check_funding([self.bot], self.bot.alert)
+        funding = [a for a in self.alerts if 'FUNDING' in a]
+        self.assertEqual(len(funding), 1)
+        self.assertIn("kraken USD: need 305.00, have 300.00 (short 5.00)", funding[0])
+
+    async def test_check_funding_quiet_when_funded(self):
+        self.exchange.balance = {'USD': 305, 'CRV': 160.21}
+        with contextlib.redirect_stdout(io.StringIO()):
+            await check_funding([self.bot], self.bot.alert)
+        self.assertEqual(self.alerts, [])
+
+    async def test_check_funding_problem_does_not_stop_start(self):
+        def broken():
+            raise ccxt.NetworkError("down")
+        self.exchange.fetch_balance = broken
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            await check_funding([self.bot], self.bot.alert)        # must not raise
+        self.assertIn("Funding check failed", out.getvalue())
 
 
 if __name__ == '__main__':
