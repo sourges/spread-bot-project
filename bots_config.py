@@ -18,6 +18,10 @@ BOTS = [
     {'exchange': 'coinbase', 'pair': 'CRV/USDC',
     'lower': 0.2, 'upper': 1.2, 'levels': 61,
     'usd_per_entry': 60, 'count': 2},
+
+    {'exchange': 'kraken', 'pair': 'CAKE/USD',
+     'lower': 0.9996, 'upper': 4.693, 'levels': 53,
+     'usd_per_entry': 10, 'count': 2},
 ]
 
 
