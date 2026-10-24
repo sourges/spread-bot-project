@@ -12,7 +12,8 @@ class OrderProblem(Exception):
 
 class SpreadBot:
     def __init__(self, exchange, pair, buy_price, sell_price, amount, 
-                 telegram_token, chat_id, check_interval=60, totals_file='spread_totals.json'):
+                 telegram_token, chat_id, check_interval=60, totals_file='spread_totals.json',
+                 state_file='state.json'):
         """
         Initialize the spread bot
         """
@@ -28,6 +29,12 @@ class SpreadBot:
         self.buy_order_id = None
         self.sell_order_id = None
         self.totals_file = totals_file
+        self.state_file = state_file
+        self.coin = pair.split('/')[0]          # 'USDG'
+        self.quote = pair.split('/')[1]         # 'USD'
+        # What the current buy ACTUALLY filled: {'amount', 'cost', 'fee_usd', 'sell_amount'}.
+        # None until a buy fills. The sell and the profit use this, not self.amount.
+        self.buy_fill = None
         self.label = f"{exchange.id} {pair}"     # 'kraken USDG/USD'
         # saved totals, so a restart doesn't start counting from 0 again
         self.total_profit, self.total_trades = load_totals(totals_file)
@@ -38,6 +45,25 @@ class SpreadBot:
         return (f"[{self.label}] {now:%H:%M:%S} | waiting for {waiting_for} @ {price} | "
                 f"done: {self.total_trades} | profit ${self.total_profit:.4f}")
         
+    def fee_parts(self, order):
+        """(fee in USD, fee in coins) for a filled order. Kraken usually charges
+        in USD; if it charged in coins, those coins are gone and can't be sold."""
+        fee = order.get('fee')
+        if not fee or fee.get('cost') is None:
+            return 0.0, 0.0
+        cost = float(fee['cost'])
+        if fee.get('currency') == self.coin:
+            price = float(order.get('average') or order.get('price'))
+            return cost * price, cost
+        return cost, 0.0
+
+    def order_cost(self, order):
+        """USD value of what actually filled."""
+        if order.get('cost'):
+            return float(order['cost'])
+        price = float(order.get('average') or order.get('price'))
+        return float(order['filled']) * price
+
     async def place_buy_order(self):
         """
         Place a buy order at self.buy_price
@@ -56,7 +82,7 @@ class SpreadBot:
             print(error_message)
             return None
 
-        save_state('buy', self.buy_order_id)
+        save_state('buy', self.buy_order_id, self.state_file)
         message = f"🟢 BUY ORDER PLACED\nBuy {self.amount} {self.pair.split('/')[0]} at ${self.buy_price}"
         await self.send_alert(message)
         return order
@@ -76,7 +102,17 @@ class SpreadBot:
             if order['status'] == 'closed':
                 # FIXED: Fallback chain if average is None or missing
                 avg_price = order.get('average') or order.get('price') or self.buy_price
-                filled_amount = order['filled']
+                filled_amount = float(order['filled'])
+                fee_usd, fee_coin = self.fee_parts(order)
+                sell_amount = filled_amount
+                if fee_coin > 0:
+                    # Fee came out of the coins: sell only what we really have,
+                    # rounded DOWN to the exchange's precision.
+                    self.exchange.load_markets()
+                    sell_amount = float(self.exchange.amount_to_precision(
+                        self.pair, filled_amount - fee_coin))
+                self.buy_fill = {'amount': filled_amount, 'cost': self.order_cost(order),
+                                 'fee_usd': fee_usd, 'sell_amount': sell_amount}
                 message = f"✅ BUY FILLED!\nFilled: {filled_amount} {self.pair.split('/')[0]}\nAverage price: ${avg_price}\nNow placing SELL order at ${self.sell_price}..."
 
                 # save trade to log
@@ -98,6 +134,12 @@ class SpreadBot:
             print(f"Error checking buy order: {e}")
             return False
     
+    def sell_amount(self):
+        """Sell exactly what the buy filled (not AMOUNT, which may have changed)."""
+        if self.buy_fill is None:
+            return self.amount          # only if we never saw the buy fill
+        return self.buy_fill['sell_amount']
+
     async def place_sell_order(self):
         """
         Place a sell order at self.sell_price
@@ -105,7 +147,7 @@ class SpreadBot:
         try:
             order = self.exchange.create_limit_sell_order(
                 self.pair,
-                self.amount,
+                self.sell_amount(),
                 self.sell_price
             )
             self.sell_order_id = order['id']
@@ -116,8 +158,8 @@ class SpreadBot:
             print(error_message)
             return None
 
-        save_state('sell', self.sell_order_id)
-        message = f"🔴 SELL ORDER PLACED\nSell {self.amount} {self.pair.split('/')[0]} at ${self.sell_price}"
+        save_state('sell', self.sell_order_id, self.state_file, buy=self.buy_fill)
+        message = f"🔴 SELL ORDER PLACED\nSell {self.sell_amount()} {self.coin} at ${self.sell_price}"
         await self.send_alert(message)
         return order
     
@@ -136,12 +178,17 @@ class SpreadBot:
             if order['status'] == 'closed':
                 # FIXED: Fallback chain if average is None or missing
                 avg_price = order.get('average') or order.get('price') or self.sell_price
-                filled_amount = order['filled']
-                
-                # Calculate profit
-                cost_basis = self.amount * self.buy_price
-                revenue = filled_amount * avg_price
-                profit = revenue - cost_basis
+                filled_amount = float(order['filled'])
+
+                # Profit from what really happened: sell revenue - buy cost - both fees
+                revenue = self.order_cost(order)
+                sell_fee_usd, _ = self.fee_parts(order)
+                if self.buy_fill is not None:
+                    buy_cost = self.buy_fill['cost'] + self.buy_fill['fee_usd']
+                else:
+                    # state saved before this fix: assume we bought what we sold
+                    buy_cost = filled_amount * self.buy_price
+                profit = revenue - buy_cost - sell_fee_usd
                 
                 self.total_profit += profit
                 self.total_trades += 1
@@ -183,7 +230,7 @@ class SpreadBot:
         raise OrderProblem(f"Could not place the {what} after {max_attempts} attempts.")
 
     async def recover(self):
-        existing_trade = load_state()
+        existing_trade = load_state(self.state_file)
         if existing_trade is None:
             return
         if existing_trade['waiting_for'] == 'buy':
@@ -192,6 +239,7 @@ class SpreadBot:
             await self.send_alert(message)
         elif existing_trade['waiting_for'] == 'sell':
             self.sell_order_id = existing_trade['order_id']
+            self.buy_fill = existing_trade.get('buy')     # None in old state files
             message = f"🔄 BOT RESTARTED - recovered sell order {self.sell_order_id}."
             await self.send_alert(message)
     
@@ -229,8 +277,9 @@ class SpreadBot:
         print("Cycle complete!")
         self.buy_order_id = None
         self.sell_order_id = None
+        self.buy_fill = None
 
-        save_state(None, None)
+        save_state(None, None, self.state_file)
     
     async def run_continuous(self):
         """

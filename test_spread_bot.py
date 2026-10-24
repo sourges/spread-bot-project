@@ -4,8 +4,9 @@ import os
 import unittest
 from unittest.mock import patch
 from datetime import datetime
+from decimal import Decimal, ROUND_DOWN
 from spread_bot import SpreadBot
-from state import save_totals, load_totals
+from state import save_totals, load_totals, save_state, load_state
 
 
 class FakeExchange:
@@ -15,15 +16,28 @@ class FakeExchange:
 
     def __init__(self):
         self.orders = {}
+        self.placed = []            # (side, amount, price) of every order the bot placed
 
     def fetch_order(self, order_id, symbol):
         return dict(self.orders[order_id])
+
+    def create_limit_sell_order(self, symbol, amount, price):
+        self.placed.append(('sell', amount, price))
+        return {'id': f"S{len(self.placed)}"}
+
+    def load_markets(self):
+        pass
+
+    def amount_to_precision(self, symbol, amount):
+        # like Kraken: round DOWN to 5 decimals, returned as text
+        return str(Decimal(str(amount)).quantize(Decimal('0.00001'), rounding=ROUND_DOWN))
 
 
 class SpreadBotTest(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         self.totals_file = 'test_spread_totals.json'
+        self.state_file = 'test_spread_state.json'
         self.exchange = FakeExchange()
         self.alerts = []
         self.bot = self.make_bot()
@@ -31,7 +45,7 @@ class SpreadBotTest(unittest.IsolatedAsyncioTestCase):
     def make_bot(self):
         bot = SpreadBot(self.exchange, 'USDG/USD', 0.9999, 1.0000, 100,
                         telegram_token='123:fake', chat_id='1', check_interval=0,
-                        totals_file=self.totals_file)
+                        totals_file=self.totals_file, state_file=self.state_file)
 
         async def alert(message):
             self.alerts.append(message)
@@ -39,8 +53,9 @@ class SpreadBotTest(unittest.IsolatedAsyncioTestCase):
         return bot
 
     def tearDown(self):
-        if os.path.exists(self.totals_file):
-            os.remove(self.totals_file)
+        for f in (self.totals_file, self.state_file):
+            if os.path.exists(f):
+                os.remove(f)
 
     def test_status_line(self):
         line = self.bot.status_line('buy', 0.9999, datetime(2026, 10, 23, 10, 43, 12))
@@ -78,6 +93,72 @@ class SpreadBotTest(unittest.IsolatedAsyncioTestCase):
 
     def test_no_totals_file_starts_at_zero(self):
         self.assertEqual(load_totals('no_such_totals.json'), (0.0, 0))
+
+
+    # ---------- sell and profit use what really filled ----------
+
+    async def fill_buy(self, order):
+        """Pretend the bot's buy B1 filled like `order`, then let it place the sell."""
+        self.exchange.orders['B1'] = order
+        self.bot.buy_order_id = 'B1'
+        with patch('spread_bot.log_trade'), contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(await self.bot.check_buy_filled())
+            await self.bot.place_sell_order()
+
+    async def fill_sell(self, order):
+        self.exchange.orders['S1'] = order
+        self.bot.sell_order_id = 'S1'
+        with patch('spread_bot.log_trade'), contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(await self.bot.check_sell_filled())
+
+    async def test_sell_is_what_the_buy_filled(self):
+        await self.fill_buy({'status': 'closed', 'filled': 100, 'average': 0.9999,
+                             'cost': 99.99, 'fee': {'cost': 0.0, 'currency': 'USD'}})
+        self.assertEqual(self.exchange.placed, [('sell', 100, 1.0)])
+        saved = load_state(self.state_file)
+        self.assertEqual(saved['waiting_for'], 'sell')
+        self.assertEqual(saved['buy'], {'amount': 100, 'cost': 99.99, 'fee_usd': 0.0,
+                                        'sell_amount': 100})
+
+    async def test_changed_amount_does_not_change_the_sell(self):
+        self.bot.amount = 200                       # AMOUNT raised, but this buy was for 100
+        await self.fill_buy({'status': 'closed', 'filled': 100, 'average': 0.9999,
+                             'cost': 99.99, 'fee': None})
+        self.assertEqual(self.exchange.placed, [('sell', 100, 1.0)])
+
+    async def test_fee_taken_in_coins_is_not_sold(self):
+        await self.fill_buy({'status': 'closed', 'filled': 100, 'average': 0.9999,
+                             'cost': 99.99, 'fee': {'cost': 0.02, 'currency': 'USDG'}})
+        self.assertEqual(self.exchange.placed, [('sell', 99.98, 1.0)])    # 100 - 0.02
+        self.assertAlmostEqual(self.bot.buy_fill['fee_usd'], 0.019998)   # 0.02 * 0.9999
+
+    async def test_profit_subtracts_both_fees(self):
+        await self.fill_buy({'status': 'closed', 'filled': 100, 'average': 0.9999,
+                             'cost': 99.99, 'fee': {'cost': 0.10, 'currency': 'USD'}})
+        await self.fill_sell({'status': 'closed', 'filled': 100, 'average': 1.0,
+                              'cost': 100.0, 'fee': {'cost': 0.10, 'currency': 'USD'}})
+        # by hand: 100.00 - 99.99 - 0.10 - 0.10 = -0.19
+        self.assertAlmostEqual(self.bot.total_profit, -0.19)
+
+    async def test_restart_while_selling_uses_saved_buy(self):
+        # saved buy: cost 99.95 + fee 0.01 (different from 100 * 0.9999, so we can tell)
+        save_state('sell', 'S1', self.state_file,
+                   buy={'amount': 100, 'cost': 99.95, 'fee_usd': 0.01, 'sell_amount': 100})
+        self.bot.amount = 200                       # changed while it was down
+        await self.bot.recover()
+        await self.fill_sell({'status': 'closed', 'filled': 100, 'average': 1.0,
+                              'cost': 100.0, 'fee': None})
+        # by hand: 100.00 - 99.95 - 0.01 = 0.04 (old math: 100 - 200 * 0.9999 = -99.98)
+        self.assertAlmostEqual(self.bot.total_profit, 0.04)
+
+    async def test_old_state_without_buy_still_works(self):
+        save_state('sell', 'S1', self.state_file)  # saved before this fix
+        self.bot.amount = 200
+        await self.bot.recover()
+        await self.fill_sell({'status': 'closed', 'filled': 100, 'average': 1.0,
+                              'cost': 100.0, 'fee': None})
+        # falls back to sold amount * buy price: 100 - 100 * 0.9999 = 0.01
+        self.assertAlmostEqual(self.bot.total_profit, 0.01)
 
 
 if __name__ == '__main__':

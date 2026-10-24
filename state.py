@@ -1,9 +1,13 @@
 import json
 
-def save_state(waiting_for, order_id, filename = 'state.json'):
+def save_state(waiting_for, order_id, filename = 'state.json', buy=None):
+    """buy: what the buy actually filled (amount, cost, fee), saved while waiting
+    for the sell so profit is right even after a restart."""
     trade = {}
     trade['waiting_for'] = waiting_for
     trade['order_id'] = order_id
+    if buy is not None:
+        trade['buy'] = buy
     with open(filename, 'w') as f:
         json.dump(trade, f)
 
