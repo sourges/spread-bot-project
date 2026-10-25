@@ -164,6 +164,7 @@ grid_state.json.tmp
 grid_trades.txt
 grid_state_*.json
 grid_state_*.json.tmp
+grid_completed_*.csv
 grid_trades_*.txt
 
 # Spyder project settings
