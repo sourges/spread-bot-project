@@ -1,4 +1,6 @@
 import asyncio
+import csv
+import os
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -9,6 +11,21 @@ from grid_state import save_grid_state, load_grid_state
 from log_trade import log_trade
 
 
+CSV_COLUMNS = ['time', 'exchange', 'pair', 'side', 'entry_price', 'exit_price',
+               'amount', 'entry_cost', 'exit_cost', 'fees', 'profit']
+
+
+def write_completed(filename, row):
+    """Add one completed trade to a CSV file (header first if the file is new).
+    One row per TRADE DONE, ready for the trade-analyzer or a spreadsheet."""
+    new_file = not os.path.exists(filename)
+    with open(filename, 'a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+        if new_file:
+            writer.writeheader()
+        writer.writerow(row)
+
+
 class OrderProblem(Exception):
     """Something happened that needs a human (e.g. an exit order was
     cancelled while we hold the coins). The bot stops and tells you."""
@@ -17,7 +34,7 @@ class OrderProblem(Exception):
 class GridBot:
     def __init__(self, exchange, pair, levels, usd_per_entry, amount_decimals,
                  min_amount, alert, count=2, check_interval=60,
-                 state_file=None, log_file=None):
+                 state_file=None, log_file=None, csv_file=None):
         """
         exchange:        ccxt exchange object (Kraken now, Coinbase later)
         levels:          grid prices from geometric_levels()
@@ -42,6 +59,7 @@ class GridBot:
         self.label = f"{exchange.id} {pair}"             # 'kraken CRV/USD'
         self.state_file = state_file or f"grid_state_{self.name}.json"
         self.log_file = log_file or f"grid_trades_{self.name}.txt"
+        self.csv_file = csv_file or f"grid_completed_{self.name}.csv"
 
         self.coin = pair.split('/')[0]      # 'CRV'
         self.quote = pair.split('/')[1]     # 'USD'
@@ -271,6 +289,14 @@ class GridBot:
         else:
             profit = entry_cost - exit_cost - fees     # sold high, bought back low
 
+        write_completed(self.csv_file, {
+            'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'exchange': self.exchange.id, 'pair': self.pair, 'side': trade['side'],
+            'entry_price': trade['entry_price'], 'exit_price': trade['exit_price'],
+            'amount': trade['amount'], 'entry_cost': round(entry_cost, 4),
+            'exit_cost': round(exit_cost, 4), 'fees': round(fees, 4),
+            'profit': round(profit, 4),
+        })
         self.total_profit += profit
         self.completed += 1
         self.day_done += 1

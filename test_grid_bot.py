@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import csv
 import io
 import os
 import unittest
@@ -96,6 +97,7 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
         self.levels = [0.32829, 0.33818, 0.34835, 0.35884, 0.36964, 0.38077]
         self.state_file = 'test_grid_state.json'
         self.log_file = 'test_grid_trades.txt'
+        self.csv_file = 'test_grid_completed.csv'
         self.exchange = FakeExchange(price=0.3795)
         self.alerts = []
         self.bot = self.make_bot(self.levels)
@@ -105,10 +107,11 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
             self.alerts.append(message)
         return GridBot(self.exchange, 'CRV/USD', levels, 61, 2, 20, alert,
                        count=2, check_interval=0,
-                       state_file=self.state_file, log_file=self.log_file)
+                       state_file=self.state_file, log_file=self.log_file,
+                       csv_file=self.csv_file)
 
     def tearDown(self):
-        for f in (self.state_file, self.log_file):
+        for f in (self.state_file, self.log_file, self.csv_file):
             if os.path.exists(f):
                 os.remove(f)
 
@@ -602,6 +605,45 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
         await self.bot.run_cycle()
         self.assertEqual(len(self.range_alerts()), 1)
         self.assertIn("price 0.39 is ABOVE the range (0.38077)", self.range_alerts()[0])
+
+
+    # ---------- completed trades CSV ----------
+
+    def read_csv(self):
+        with open(self.csv_file, newline='') as f:
+            return list(csv.DictReader(f))
+
+    async def test_trade_done_writes_csv_row(self):
+        await self.do_one_long_trade()
+        rows = self.read_csv()
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual((row['exchange'], row['pair'], row['side']), ('kraken', 'CRV/USD', 'long'))
+        self.assertEqual((row['entry_price'], row['exit_price'], row['amount']),
+                         ('0.36964', '0.38077', '165.02'))
+        # by hand: 0.01113 * 165.02 = 1.83667, fees 0.003 * 165.02 * 0.75041 = 0.37150
+        # -> 1.46518 -> 1.4652 (4 decimals)
+        self.assertEqual(row['profit'], '1.4652')
+        self.assertEqual(row['fees'], '0.3715')
+
+    async def test_second_trade_adds_row_not_header(self):
+        await self.do_one_long_trade()
+        buy = self.exchange.open_at('buy', 0.36964)     # the long is placed again after the trade
+        self.exchange.fill(buy['id'])
+        await self.bot.run_cycle()
+        self.exchange.fill(self.exchange.open_at('sell', 0.38077)['id'])
+        await self.bot.run_cycle()
+        with open(self.csv_file) as f:
+            lines = f.read().splitlines()
+        self.assertEqual(len(lines), 3)                 # header + 2 trades
+        self.assertTrue(lines[0].startswith('time,exchange,pair'))
+        self.assertEqual(len(self.read_csv()), 2)
+
+    def test_default_csv_name_includes_exchange_and_pair(self):
+        async def alert(message):
+            pass
+        bot = GridBot(self.exchange, 'CRV/USD', self.levels, 61, 2, 20, alert)
+        self.assertEqual(bot.csv_file, 'grid_completed_kraken_CRV_USD.csv')
 
 
 if __name__ == '__main__':

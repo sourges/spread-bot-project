@@ -3,6 +3,7 @@ import os
 import ccxt
 from dotenv import load_dotenv
 from telegram import Bot
+from telegram.request import HTTPXRequest
 from grid import geometric_levels, tick_to_decimals, plan_entries, order_amount, check_config
 from grid_bot import GridBot, run_bots, print_status, daily_summary, check_funding
 from bots_config import BOTS, CHECK_INTERVAL, DRY_RUN, SUMMARY_HOUR
@@ -78,7 +79,11 @@ async def main():
         print(f"❌ bots_config.py: {e}")
         return
 
-    telegram = Bot(token=TELEGRAM_TOKEN)
+    # ccxt calls pause the whole program for a moment, so give Telegram
+    # 30 s instead of the default 5 s before calling it "timed out".
+    telegram = Bot(token=TELEGRAM_TOKEN,
+                   request=HTTPXRequest(connect_timeout=30, read_timeout=30,
+                                        write_timeout=30, pool_timeout=30))
 
     async def alert(message):
         print(message)
