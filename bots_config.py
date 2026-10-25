@@ -22,6 +22,10 @@ BOTS = [
     {'exchange': 'kraken', 'pair': 'CAKE/USD',
      'lower': 0.9996, 'upper': 4.693, 'levels': 53,
      'usd_per_entry': 10, 'count': 2},
+
+    {'exchange': 'coinbase', 'pair': 'ANKR/USDC',
+     'lower': 0.00389, 'upper': 0.0055, 'levels': 13,
+     'usd_per_entry': 25, 'count': 2},
 ]
 
 
@@ -30,4 +34,4 @@ CHECK_INTERVAL = 60     # seconds between cycles, for every bot
 SUMMARY_HOUR = 9        # daily Telegram summary at this hour (0-23, the PC's clock)
 
 # DRY_RUN = True: connect, show each bot's plan, place NOTHING.
-DRY_RUN = False
+DRY_RUN = True
