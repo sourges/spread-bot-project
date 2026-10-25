@@ -568,5 +568,41 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Funding check failed", out.getvalue())
 
 
+    # ---------- out-of-range alert ----------
+    # range in these tests: 0.32829 - 0.38077
+
+    def range_alerts(self):
+        return [a for a in self.alerts if 'RANGE' in a]
+
+    async def test_inside_range_no_alert(self):
+        await self.bot.run_cycle()
+        await self.bot.run_cycle()
+        self.assertEqual(self.range_alerts(), [])
+        self.assertNotIn('OUT OF RANGE', self.bot.status_line)
+
+    async def test_below_range_alerts_once_then_back(self):
+        await self.bot.run_cycle()                  # 0.3795: inside
+        self.exchange.price = 0.32                  # under 0.32829
+        await self.bot.run_cycle()
+        await self.bot.run_cycle()                  # still below: no second alert
+        self.assertEqual(len(self.range_alerts()), 1)
+        self.assertIn("price 0.32 is BELOW the range (0.32829)", self.range_alerts()[0])
+        self.assertTrue(self.bot.status_line.endswith(" | OUT OF RANGE (below)"))
+        self.assertIn("⚠️ kraken CRV/USD: OUT OF RANGE (below 0.32829)",
+                      summary_text([self.bot], self.bot.last_cycle))
+
+        self.exchange.price = 0.3795                # back inside
+        await self.bot.run_cycle()
+        self.assertEqual(len(self.range_alerts()), 2)
+        self.assertIn("✅ BACK IN RANGE: price 0.3795 (0.32829–0.38077)", self.range_alerts()[1])
+        self.assertNotIn('OUT OF RANGE', self.bot.status_line)
+
+    async def test_above_range_alerts(self):
+        self.exchange.price = 0.39                  # over 0.38077, already at the first cycle
+        await self.bot.run_cycle()
+        self.assertEqual(len(self.range_alerts()), 1)
+        self.assertIn("price 0.39 is ABOVE the range (0.38077)", self.range_alerts()[0])
+
+
 if __name__ == '__main__':
     unittest.main()

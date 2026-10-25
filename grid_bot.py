@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timedelta
 import ccxt
 from grid import (plan_entries, exit_order, order_amount, bot_name,
-                  open_positions, funding_needs)
+                  open_positions, funding_needs, range_position)
 from grid_state import save_grid_state, load_grid_state
 from log_trade import log_trade
 
@@ -58,6 +58,7 @@ class GridBot:
         self.day_profit = 0.0
         self.last_price = None      # price from the last cycle (for the summary)
         self.funds_alerted = set()  # sides ('long'/'short') already alerted for low funds
+        self.range_state = None     # 'inside' / 'below' / 'above'; None before the first cycle
 
     def log(self, message):
         """Terminal line, labelled like the alerts: [kraken CRV/USD] ..."""
@@ -343,6 +344,7 @@ class GridBot:
     async def run_cycle(self):
         await self.check_fills()                                  # 1. fills first, so statuses are current
         price = self.exchange.fetch_ticker(self.pair)['last']
+        await self.check_range(price)
         plan = plan_entries(self.levels, price, self.trades, self.count)
         for trade in plan['cancel']:                              # 2. cancel far entries
             await self.cancel_entry(trade)
@@ -350,8 +352,28 @@ class GridBot:
         # Not printed here: print_status() prints every bot's line together, once a minute.
         self.status_line = (f"Price {price} | open trades: {len(self.trades)} | "
                             f"done: {self.completed} | profit ${self.total_profit:.4f}")
+        if self.range_state != 'inside':
+            self.status_line += f" | OUT OF RANGE ({self.range_state})"
         self.last_cycle = time.monotonic()
         self.last_price = price
+
+    async def check_range(self, price):
+        """Alert ONCE when the price leaves the grid's range, and once when it's back.
+        Trading doesn't change: past the ends there are simply no levels to place."""
+        new = range_position(self.levels, price)
+        if new == self.range_state:
+            return
+        lower, upper = self.levels[0], self.levels[-1]
+        if new == 'below':
+            await self.alert(f"⚠️ OUT OF RANGE: price {price} is BELOW the range ({lower}).\n"
+                             f"No new buys until it's back above {lower}. Open exits still work.")
+        elif new == 'above':
+            await self.alert(f"⚠️ OUT OF RANGE: price {price} is ABOVE the range ({upper}).\n"
+                             f"No new sells until it's back below {upper}. Open exits still work.")
+        elif self.range_state is not None:
+            # back inside (no alert on a normal start inside the range)
+            await self.alert(f"✅ BACK IN RANGE: price {price} ({lower}–{upper}).")
+        self.range_state = new
 
     async def run_continuous(self):
         try:
@@ -464,6 +486,9 @@ def summary_text(bots, now, stale_minutes=10):
             head = f"🛑 {bot.label}: STOPPED"
         else:
             head = f"{bot.label}"
+            if bot.range_state in ('below', 'above'):
+                edge = bot.levels[0] if bot.range_state == 'below' else bot.levels[-1]
+                head = f"⚠️ {bot.label}: OUT OF RANGE ({bot.range_state} {edge})"
             age = minutes_since(bot, now)
             if age is None or age >= stale_minutes:
                 head = f"⚠️ {bot.label}: " + ("no cycle yet" if age is None else f"no cycle for {age} min")

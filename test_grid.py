@@ -1,7 +1,7 @@
 import unittest
 from grid import grid_levels, split_levels, centered_grid, tick_to_decimals, geometric_levels, free_levels_below, free_levels_above, exit_order, neighbor_level, live_entries, plan_entries
 
-from grid import order_amount, bot_name, check_config, open_positions, funding_needs
+from grid import order_amount, bot_name, check_config, open_positions, funding_needs, range_position
 
 
 class LevelTest(unittest.TestCase):
@@ -404,6 +404,16 @@ class LevelTest(unittest.TestCase):
         trades = [{'side': 'long', 'status': 'entry_open', 'entry_price': 0.2,
                    'exit_price': 0.3, 'amount': 50}]
         self.assertEqual(funding_needs([0.1, 0.2, 0.3, 0.4, 0.5], 0.25, trades, 10)['quote'], 20)
+
+    # ---------- range_position ----------
+
+    def test_range_position(self):
+        levels = [1, 2, 3]
+        self.assertEqual(range_position(levels, 0.5), 'below')
+        self.assertEqual(range_position(levels, 1), 'inside')     # exactly on the edge is inside
+        self.assertEqual(range_position(levels, 2.5), 'inside')
+        self.assertEqual(range_position(levels, 3), 'inside')
+        self.assertEqual(range_position(levels, 3.1), 'above')
 
 
 if __name__ == '__main__':

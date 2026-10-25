@@ -253,6 +253,15 @@ def funding_needs(levels, price, trades, usd_per_entry):
     return {'quote': quote, 'coin': coin}
 
 
+def range_position(levels, price):
+    """'below' under the lowest level, 'above' over the highest, else 'inside'."""
+    if price < levels[0]:
+        return 'below'
+    if price > levels[-1]:
+        return 'above'
+    return 'inside'
+
+
 if __name__ == '__main__':
     levels = [0.32829, 0.33818, 0.34835, 0.35884, 0.36964, 0.38077]
     current_price = 0.3795
