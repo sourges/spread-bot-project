@@ -21,7 +21,7 @@ BOTS = [
 
     {'exchange': 'kraken', 'pair': 'CAKE/USD',
      'lower': 0.9996, 'upper': 4.693, 'levels': 53,
-     'usd_per_entry': 10, 'count': 2},
+     'usd_per_entry': 40, 'count': 2},
 
     {'exchange': 'coinbase', 'pair': 'ANKR/USDC',
      'lower': 0.00389, 'upper': 0.0055, 'levels': 13,
