@@ -277,3 +277,35 @@ if __name__ == '__main__':
     print(plan)
     
 
+
+
+def preview_lines(levels, price, trades, count, usd_per_entry, amount_decimals, min_amount):
+    """What the bot will do on its first cycle, as lines for the startup screen.
+    Uses the SAVED trades, so after a restart it shows what's really open
+    instead of a fresh grid:
+      holding  a filled entry, waiting for its exit
+      waiting  a live entry that stays
+      cancel   a live entry no longer wanted (too far from price, or its level is taken)
+      new      an entry the bot will place"""
+    plan = plan_entries(levels, price, trades, count)
+    cancel_ids = [id(t) for t in plan['cancel']]
+    lines = []
+    for t in trades:
+        side = 'BUY' if t['side'] == 'long' else 'SELL'
+        if t['status'] == 'exit_open':
+            exit_side = 'SELL' if t['side'] == 'long' else 'BUY'
+            lines.append(f"  holding {t['side']}: exit {exit_side} {t['amount']} @ {t['exit_price']}"
+                         f"  (entry filled @ {t['entry_price']})")
+        elif id(t) in cancel_ids:
+            lines.append(f"  cancel: {side} {t['amount']} @ {t['entry_price']}  (not needed any more: too far from price or level taken)")
+        else:
+            lines.append(f"  waiting: {side} {t['amount']} @ {t['entry_price']}  (exit @ {t['exit_price']})")
+    for t in plan['place']:
+        side = 'BUY' if t['side'] == 'long' else 'SELL'
+        try:
+            amount = order_amount(usd_per_entry, t['entry_price'], amount_decimals, min_amount)
+        except ValueError:
+            lines.append(f"  new: {side} @ {t['entry_price']}  (below min amount, will not place)")
+            continue
+        lines.append(f"  new: {side} {amount} @ {t['entry_price']}  (exit @ {t['exit_price']})")
+    return lines

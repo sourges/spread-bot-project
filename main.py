@@ -11,7 +11,8 @@ load_dotenv()
 PAIR = 'USDG/USD'
 BUY_PRICE = 0.9999
 SELL_PRICE = 1.0000
-AMOUNT = 100            # coins per trade
+AMOUNT = 500            # coins per trade
+COMPOUND = True         # True: add total profit to each new buy. False: always AMOUNT.
 CHECK_INTERVAL = 60     # seconds between checks
 # =====================================================
 
@@ -88,7 +89,8 @@ async def main():
         amount=AMOUNT,
         telegram_token=TELEGRAM_TOKEN,
         chat_id=CHAT_ID,
-        check_interval=CHECK_INTERVAL
+        check_interval=CHECK_INTERVAL,
+        compound=COMPOUND
     )
 
     coin = PAIR.split('/')[0]
@@ -97,6 +99,11 @@ async def main():
     print(f"   Buy price: {BUY_PRICE}")
     print(f"   Sell price: {SELL_PRICE}")
     print(f"   Amount per trade: {AMOUNT} {coin}")
+    if COMPOUND:
+        print(f"   Compound: ON (next buy {bot.buy_amount()} {coin}, "
+              f"AMOUNT + ${bot.total_profit:.4f} profit)")
+    else:
+        print("   Compound: OFF")
     print("\n🚀 Starting SpreadBot...")
     print("(Press Ctrl+C to stop the bot)\n")
     await bot.run_continuous()

@@ -2,6 +2,7 @@ import unittest
 from grid import grid_levels, split_levels, centered_grid, tick_to_decimals, geometric_levels, free_levels_below, free_levels_above, exit_order, neighbor_level, live_entries, plan_entries
 
 from grid import order_amount, bot_name, check_config, open_positions, funding_needs, range_position
+from grid import preview_lines
 
 
 class LevelTest(unittest.TestCase):
@@ -414,6 +415,51 @@ class LevelTest(unittest.TestCase):
         self.assertEqual(range_position(levels, 2.5), 'inside')
         self.assertEqual(range_position(levels, 3), 'inside')
         self.assertEqual(range_position(levels, 3.1), 'above')
+
+
+
+class PreviewLinesTest(unittest.TestCase):
+    """Startup preview. Levels 1.0-1.4, price 1.25, count 1, $10 per entry, 2 decimals.
+    By hand: $10 / 1.2 = 8.333 -> 8.33,  $10 / 1.3 = 7.692 -> 7.69."""
+
+    LEVELS = [1.0, 1.1, 1.2, 1.3, 1.4]
+
+    def lines(self, trades, min_amount=0.01):
+        return preview_lines(self.LEVELS, 1.25, trades, 1, 10, 2, min_amount)
+
+    def test_no_saved_trades_shows_fresh_grid(self):
+        self.assertEqual(self.lines([]), [
+            "  new: BUY 8.33 @ 1.2  (exit @ 1.3)",
+            "  new: SELL 7.69 @ 1.3  (exit @ 1.2)",
+        ])
+
+    def test_live_entry_is_waiting_not_new(self):
+        trades = [{'side': 'long', 'entry_price': 1.2, 'exit_price': 1.3,
+                   'amount': 8.33, 'status': 'entry_open'}]
+        self.assertEqual(self.lines(trades), [
+            "  waiting: BUY 8.33 @ 1.2  (exit @ 1.3)",
+            "  new: SELL 7.69 @ 1.3  (exit @ 1.2)",
+        ])
+
+    def test_holding_and_cancel(self):
+        # short filled at 1.4, waiting to buy back at 1.3 -> 1.3 and 1.4 are taken, no new sell.
+        # live buy at 1.0 is too far (count 1, nearest free buy is 1.2) -> cancel, new buy at 1.2.
+        trades = [{'side': 'short', 'entry_price': 1.4, 'exit_price': 1.3,
+                   'amount': 7.14, 'status': 'exit_open'},
+                  {'side': 'long', 'entry_price': 1.0, 'exit_price': 1.1,
+                   'amount': 10.0, 'status': 'entry_open'}]
+        self.assertEqual(self.lines(trades), [
+            "  holding short: exit BUY 7.14 @ 1.3  (entry filled @ 1.4)",
+            "  cancel: BUY 10.0 @ 1.0  (not needed any more: too far from price or level taken)",
+            "  new: BUY 8.33 @ 1.2  (exit @ 1.3)",
+        ])
+
+    def test_below_min_amount_says_so(self):
+        # min 8: buy 8.33 is fine, sell 7.69 is too small
+        self.assertEqual(self.lines([], min_amount=8), [
+            "  new: BUY 8.33 @ 1.2  (exit @ 1.3)",
+            "  new: SELL @ 1.3  (below min amount, will not place)",
+        ])
 
 
 if __name__ == '__main__':

@@ -430,6 +430,9 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_status_line_warns_when_no_cycle_for_10_min(self):
         await self.bot.run_cycle()
+        # A round number, not time.monotonic(): with a float like 261891.47608289847,
+        # (x + 600) - x comes out as 599.99999999997, so "10 min" became 9 (flaky test).
+        self.bot.last_cycle = 1000.0
         line = status_lines([self.bot], self.bot.last_cycle + 599)[0]       # 9 min 59 s: fine
         self.assertNotIn('⚠️', line)
         line = status_lines([self.bot], self.bot.last_cycle + 600)[0]       # 10 min

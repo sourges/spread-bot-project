@@ -4,7 +4,8 @@ import ccxt
 from dotenv import load_dotenv
 from telegram import Bot
 from telegram.request import HTTPXRequest
-from grid import geometric_levels, tick_to_decimals, plan_entries, order_amount, check_config
+from grid import geometric_levels, tick_to_decimals, check_config, preview_lines
+from grid_state import load_grid_state
 from grid_bot import GridBot, run_bots, print_status, daily_summary, check_funding
 from bots_config import BOTS, CHECK_INTERVAL, DRY_RUN, SUMMARY_HOUR
 
@@ -46,18 +47,30 @@ def build_bot(exchange, cfg, alert):
     if len(set(levels)) != len(levels):
         raise ValueError(f"{pair}: some levels are identical after rounding. Use fewer levels.")
 
+    bot = GridBot(exchange, pair, levels, cfg['usd_per_entry'], amount_decimals,
+                  min_amount, alert, count=cfg['count'], check_interval=CHECK_INTERVAL)
+
+    # Preview from the SAVED trades and levels (what recover() will use),
+    # so after a restart it shows what's really open, not a fresh grid.
+    state = load_grid_state(bot.state_file)
+    trades = state['trades'] if state else []
     price = exchange.fetch_ticker(pair)['last']
     print(f"\n=== {exchange.id} {pair} ===")
+    if state and state['levels'] != levels:
+        print("  (settings changed: using the SAVED levels so open trades still match)")
+        levels = state['levels']
     print(f"Price {price} | {len(levels)} levels {levels[0]}–{levels[-1]} | "
-          f"min amount {min_amount}")
-    plan = plan_entries(levels, price, [], cfg['count'])
-    for t in plan['place']:
-        side = 'BUY ' if t['side'] == 'long' else 'SELL'
-        amount = order_amount(cfg['usd_per_entry'], t['entry_price'], amount_decimals, min_amount)
-        print(f"  {side} {amount} @ {t['entry_price']}  (exit @ {t['exit_price']})")
+          f"min amount {min_amount} | saved trades: {len(trades)}")
+    lines = preview_lines(levels, price, trades, cfg['count'], cfg['usd_per_entry'],
+                          amount_decimals, min_amount)
+    for line in lines:
+        print(line)
+    if any('below min amount' in line for line in lines):
+        # same as before: a size the exchange won't accept stops startup, it doesn't fail quietly
+        raise ValueError(f"{pair}: usd_per_entry ${cfg['usd_per_entry']} is below the "
+                         f"exchange's minimum order ({min_amount}). Raise it in bots_config.py.")
 
-    return GridBot(exchange, pair, levels, cfg['usd_per_entry'], amount_decimals,
-                   min_amount, alert, count=cfg['count'], check_interval=CHECK_INTERVAL)
+    return bot
 
 
 async def main():

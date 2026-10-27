@@ -21,6 +21,10 @@ class FakeExchange:
     def fetch_order(self, order_id, symbol):
         return dict(self.orders[order_id])
 
+    def create_limit_buy_order(self, symbol, amount, price):
+        self.placed.append(('buy', amount, price))
+        return {'id': f"B{len(self.placed)}"}
+
     def create_limit_sell_order(self, symbol, amount, price):
         self.placed.append(('sell', amount, price))
         return {'id': f"S{len(self.placed)}"}
@@ -42,10 +46,11 @@ class SpreadBotTest(unittest.IsolatedAsyncioTestCase):
         self.alerts = []
         self.bot = self.make_bot()
 
-    def make_bot(self):
+    def make_bot(self, compound=False):
         bot = SpreadBot(self.exchange, 'USDG/USD', 0.9999, 1.0000, 100,
                         telegram_token='123:fake', chat_id='1', check_interval=0,
-                        totals_file=self.totals_file, state_file=self.state_file)
+                        totals_file=self.totals_file, state_file=self.state_file,
+                        compound=compound)
 
         async def alert(message):
             self.alerts.append(message)
@@ -56,6 +61,42 @@ class SpreadBotTest(unittest.IsolatedAsyncioTestCase):
         for f in (self.totals_file, self.state_file):
             if os.path.exists(f):
                 os.remove(f)
+
+    # ---------- compounding: buy_amount() ----------
+
+    def test_compound_off_ignores_profit(self):
+        self.bot.total_profit = 3.0
+        self.assertEqual(self.bot.buy_amount(), 100)
+
+    def test_compound_on_no_profit_yet(self):
+        bot = self.make_bot(compound=True)
+        bot.total_profit = 0.0
+        self.assertEqual(bot.buy_amount(), 100)
+
+    def test_compound_adds_profit_as_coins(self):
+        # $3.00 / 0.9999 = 3.00030003 coins -> 103.00030003 -> 5 decimals down = 103.0003
+        bot = self.make_bot(compound=True)
+        bot.total_profit = 3.0
+        self.assertEqual(bot.buy_amount(), 103.0003)
+
+    def test_compound_rounds_down(self):
+        # 0.0123456 / 0.9999 = 0.0123468347 -> 100.0123468 -> down 100.01234 (up would be ...35)
+        bot = self.make_bot(compound=True)
+        bot.total_profit = 0.0123456
+        self.assertEqual(bot.buy_amount(), 100.01234)
+
+    def test_compound_negative_profit_keeps_amount(self):
+        bot = self.make_bot(compound=True)
+        bot.total_profit = -0.5
+        self.assertEqual(bot.buy_amount(), 100)
+
+    async def test_buy_order_uses_compounded_amount(self):
+        bot = self.make_bot(compound=True)
+        bot.total_profit = 3.0
+        with contextlib.redirect_stdout(io.StringIO()):
+            await bot.place_buy_order()
+        self.assertEqual(self.exchange.placed, [('buy', 103.0003, 0.9999)])
+        self.assertIn("Buy 103.0003 USDG", self.alerts[-1])
 
     def test_status_line(self):
         line = self.bot.status_line('buy', 0.9999, datetime(2026, 10, 23, 10, 43, 12))

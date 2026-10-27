@@ -13,7 +13,7 @@ class OrderProblem(Exception):
 class SpreadBot:
     def __init__(self, exchange, pair, buy_price, sell_price, amount, 
                  telegram_token, chat_id, check_interval=60, totals_file='spread_totals.json',
-                 state_file='state.json'):
+                 state_file='state.json', compound=False):
         """
         Initialize the spread bot
         """
@@ -22,6 +22,8 @@ class SpreadBot:
         self.buy_price = buy_price
         self.sell_price = sell_price
         self.amount = amount
+        # compound=True: profit is added to each new buy (see buy_amount)
+        self.compound = compound
         self.telegram_bot = Bot(token=telegram_token)
         self.chat_id = chat_id
         self.check_interval = check_interval
@@ -64,14 +66,28 @@ class SpreadBot:
         price = float(order.get('average') or order.get('price'))
         return float(order['filled']) * price
 
+    def buy_amount(self):
+        """Coins to buy this cycle.
+        compound off: always AMOUNT.
+        compound on:  AMOUNT + total profit turned into coins at the buy price,
+                      rounded DOWN to the exchange's precision.
+                      e.g. AMOUNT 100, profit $3.00, buy 0.9999 -> 103.0003 coins.
+        Only profit is added; a negative total never shrinks the buy below AMOUNT."""
+        if not self.compound or self.total_profit <= 0:
+            return self.amount
+        extra = self.total_profit / self.buy_price
+        self.exchange.load_markets()
+        return float(self.exchange.amount_to_precision(self.pair, self.amount + extra))
+
     async def place_buy_order(self):
         """
         Place a buy order at self.buy_price
         """
         try:
+            amount = self.buy_amount()      # inside try: a network error here retries like a failed order
             order = self.exchange.create_limit_buy_order(
                 self.pair,
-                self.amount,
+                amount,
                 self.buy_price
             )
             self.buy_order_id = order['id']
@@ -83,7 +99,7 @@ class SpreadBot:
             return None
 
         save_state('buy', self.buy_order_id, self.state_file)
-        message = f"🟢 BUY ORDER PLACED\nBuy {self.amount} {self.pair.split('/')[0]} at ${self.buy_price}"
+        message = f"🟢 BUY ORDER PLACED\nBuy {amount} {self.coin} at ${self.buy_price}"
         await self.send_alert(message)
         return order
     
