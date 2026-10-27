@@ -30,6 +30,11 @@ BOTS = [
     {'exchange': 'coinbase', 'pair': 'UNI/USDC',
      'lower': 2.516, 'upper': 16.816, 'levels': 65,
      'usd_per_entry': 10, 'count': 2},
+
+    {'exchange': 'coinbase', 'pair': 'DOGE/USDC',
+      'lower': 0.05, 'upper': 0.25, 'levels': 55, 
+      'usd_per_entry': 10, 'count': 2},
+    
 ]
 
 
