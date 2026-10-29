@@ -26,6 +26,19 @@ def write_completed(filename, row):
         writer.writerow(row)
 
 
+# Exchange errors that are just a temporary glitch on the exchange's side.
+# ccxt already treats most of these as NetworkError, but not these, so they
+# used to stop the bot. Matched against the error text.
+TEMPORARY_ERRORS = (
+    'EGeneral:No data',         # Kraken, e.g. Oct 29 04:01 (stopped CRV and CAKE)
+)
+
+
+def is_temporary(error):
+    """True if this ExchangeError is a known harmless glitch: retry, don't stop."""
+    return any(text in str(error) for text in TEMPORARY_ERRORS)
+
+
 class OrderProblem(Exception):
     """Something happened that needs a human (e.g. an exit order was
     cancelled while we hold the coins). The bot stops and tells you."""
@@ -70,6 +83,9 @@ class GridBot:
 
         # for the screen and the daily summary
         self.status = 'starting'    # 'running' or 'stopped' later
+        # False until recover() has loaded the saved trades. Saving before that
+        # would overwrite the state file with an empty trade list.
+        self.recovered = False
         self.status_line = None     # latest "Price ... | open trades ..." text
         self.last_cycle = None      # time.monotonic() of the last cycle that finished
         self.day_done = 0           # trades done since the last daily summary
@@ -98,6 +114,9 @@ class GridBot:
             'trades': self.trades,
             'total_profit': self.total_profit,
             'completed': self.completed,
+            # since the last 9 AM summary, saved so a restart doesn't zero them
+            'day_done': self.day_done,
+            'day_profit': self.day_profit,
         }
         save_grid_state(state, self.state_file)
 
@@ -118,7 +137,10 @@ class GridBot:
             self.trades = state['trades']
             self.total_profit = state['total_profit']
             self.completed = state['completed']
+            self.day_done = state.get('day_done', 0)          # older files: start at 0
+            self.day_profit = state.get('day_profit', 0.0)
             await self.alert(f"🔄 GRID BOT RESTARTED - recovered {len(self.trades)} open trades.")
+        self.recovered = True       # safe to save now: trades are loaded (or there were none)
         await self.report_unknown_orders()
 
     async def report_unknown_orders(self):
@@ -411,6 +433,12 @@ class GridBot:
                 except ccxt.NetworkError as e:
                     # Internet or Kraken hiccup: nothing changed, just try again.
                     self.log(f"Network problem, retrying next cycle: {e}")
+                except ccxt.ExchangeError as e:
+                    if not is_temporary(e):
+                        raise                   # anything else: stop (handled below)
+                    # Still visible if it keeps happening: "no cycle for 10 min"
+                    # on screen and in the 9 AM summary.
+                    self.log(f"Exchange glitch, retrying next cycle: {e}")
                 await asyncio.sleep(self.check_interval)
         except OrderProblem as e:
             self.status = 'stopped'
@@ -548,6 +576,8 @@ async def send_summary(bots, alert, now):
     for bot in bots:
         bot.day_done = 0
         bot.day_profit = 0.0
+        if bot.recovered:
+            bot.save()              # so a restart after 9 AM doesn't bring back yesterday's counts
 
 
 async def daily_summary(bots, alert, hour):

@@ -473,6 +473,82 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bot.day_profit, 0.0)
         self.assertEqual(self.bot.completed, 1)                # all-time count kept
 
+    # ---------- daily counts survive a restart ----------
+
+    async def test_day_counts_survive_restart(self):
+        await self.bot.recover()                   # fresh start (no state file yet)
+        await self.do_one_long_trade()
+        self.assertEqual(self.bot.day_done, 1)
+        self.assertGreater(self.bot.day_profit, 0)
+
+        new_bot = self.make_bot(self.levels)       # like Ctrl+C + shortcut
+        await new_bot.recover()
+        self.assertEqual(new_bot.day_done, 1)
+        self.assertEqual(new_bot.day_profit, self.bot.day_profit)
+
+    async def test_restart_after_summary_starts_day_at_zero(self):
+        await self.bot.recover()
+        await self.do_one_long_trade()
+        await send_summary([self.bot], self.bot.alert, self.bot.last_cycle)
+
+        new_bot = self.make_bot(self.levels)
+        await new_bot.recover()
+        self.assertEqual(new_bot.day_done, 0)
+        self.assertEqual(new_bot.day_profit, 0.0)
+        self.assertEqual(new_bot.completed, 1)     # all-time count still there
+
+    async def test_old_state_without_day_counts(self):
+        await self.bot.run_cycle()
+        state = load_grid_state(self.state_file)
+        del state['day_done'], state['day_profit']  # like a file saved before this fix
+        save_grid_state(state, self.state_file)
+
+        new_bot = self.make_bot(self.levels)
+        await new_bot.recover()
+        self.assertEqual(new_bot.day_done, 0)
+        self.assertEqual(new_bot.day_profit, 0.0)
+
+    async def test_summary_does_not_save_before_recover(self):
+        # a bot that never recovered (e.g. it crashed on startup) must not
+        # overwrite its state file with an empty trade list at 9 AM
+        save_grid_state({'exchange': 'kraken', 'pair': 'CRV/USD', 'levels': self.levels,
+                         'trades': [{'side': 'long'}], 'total_profit': 0,
+                         'completed': 0}, self.state_file)
+        await send_summary([self.bot], self.bot.alert, 0)
+        self.assertEqual(load_grid_state(self.state_file)['trades'], [{'side': 'long'}])
+
+    # ---------- exchange glitches ----------
+
+    async def test_kraken_no_data_is_retried(self):
+        calls = []
+        real_ticker = self.exchange.fetch_ticker
+
+        def glitch_once(symbol):
+            calls.append(symbol)
+            if len(calls) == 1:
+                raise ccxt.ExchangeError('kraken {"error":["EGeneral:No data"],"result":{}}')
+            return real_ticker(symbol)
+        self.exchange.fetch_ticker = glitch_once
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(asyncio.TimeoutError):       # still running = not stopped
+                await asyncio.wait_for(self.bot.run_continuous(), timeout=0.3)
+        self.assertFalse(any('🛑' in a for a in self.alerts))
+        # by hand: price 0.3795 -> buys 0.36964, 0.35884; only 0.38077 is above -> 1 sell = 3
+        self.assertEqual(len(self.exchange.fetch_open_orders('CRV/USD')), 3)   # next cycle traded
+
+    async def test_other_exchange_error_still_stops(self):
+        def broken(symbol):
+            raise ccxt.ExchangeError('kraken {"error":["EGeneral:Something new"],"result":{}}')
+        self.exchange.fetch_ticker = broken
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(ccxt.ExchangeError):
+                # timeout: if the bot wrongly retried forever, fail instead of hanging
+                await asyncio.wait_for(self.bot.run_continuous(), timeout=1)
+        self.assertEqual(self.bot.status, 'stopped')
+        self.assertTrue(any('🛑 GRID BOT STOPPED - unexpected error' in a for a in self.alerts))
+
     async def test_helpers_stop_when_bots_stop(self):
         class BrokenExchange(FakeExchange):
             def fetch_ticker(self, symbol):
