@@ -11,7 +11,7 @@ load_dotenv()
 PAIR = 'USDG/USD'
 BUY_PRICE = 0.9999
 SELL_PRICE = 1.0000
-AMOUNT = 500            # coins per trade
+AMOUNT = 5000            # coins per trade
 COMPOUND = True         # True: add total profit to each new buy. False: always AMOUNT.
 CHECK_INTERVAL = 60     # seconds between checks
 # =====================================================
