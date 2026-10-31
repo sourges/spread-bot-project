@@ -9,6 +9,7 @@ from grid import (plan_entries, exit_order, order_amount, bot_name,
                   open_positions, funding_needs, range_position, market_price)
 from grid_state import save_grid_state, load_grid_state
 from log_trade import log_trade
+from order_cost import trades_cost
 
 
 CSV_COLUMNS = ['time', 'exchange', 'pair', 'side', 'entry_price', 'exit_price',
@@ -195,7 +196,11 @@ class GridBot:
         return cost * price                 # fee was charged in coins
 
     def order_cost(self, order):
-        """USD value of what actually filled."""
+        """USD value of what actually filled.
+        Kraken: from the order's trades (exact). Otherwise from the order."""
+        exact = trades_cost(self.exchange, order, self.pair)
+        if exact is not None:
+            return exact
         # float() everywhere: Kraken/ccxt sometimes hands back numbers as text
         if order.get('cost'):
             return float(order['cost'])

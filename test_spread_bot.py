@@ -17,6 +17,7 @@ class FakeExchange:
     def __init__(self):
         self.orders = {}
         self.placed = []            # (side, amount, price) of every order the bot placed
+        self.order_trades = {}      # order id -> its trades (exact price and cost)
 
     def fetch_order(self, order_id, symbol):
         return dict(self.orders[order_id])
@@ -31,6 +32,9 @@ class FakeExchange:
 
     def load_markets(self):
         pass
+
+    def fetch_order_trades(self, order_id, symbol, params=None):
+        return self.order_trades[order_id]
 
     def amount_to_precision(self, symbol, amount):
         # like Kraken: round DOWN to 5 decimals, returned as text
@@ -125,6 +129,27 @@ class SpreadBotTest(unittest.IsolatedAsyncioTestCase):
         profit, trades = load_totals(self.totals_file)
         self.assertAlmostEqual(profit, 0.01)
         self.assertEqual(trades, 1)
+
+    async def test_profit_uses_exact_trade_cost_not_cut_off_average(self):
+        # Your Oct 30 trade: 5003.21106 USDG bought @ 0.9999, sold @ 1.0.
+        # Kraken said average 0.9998 on the buy; the trade itself says 0.9999.
+        # by hand: cost 5003.21106 x 0.9999 = 5002.710738894
+        #          revenue 5003.21106 x 1.0 = 5003.21106
+        #          profit = 5003.21106 x 0.0001 = 0.500321106 (the bot said 1.0006)
+        self.exchange.orders['B1'] = {'id': 'B1', 'status': 'closed', 'filled': 5003.21106,
+                                      'average': 0.9998, 'cost': 5003.21106 * 0.9998,
+                                      'trades': [{'id': 'TB'}]}
+        self.exchange.order_trades['B1'] = [{'amount': 5003.21106, 'cost': 5002.710738894}]
+        self.exchange.orders['S1'] = {'id': 'S1', 'status': 'closed', 'filled': 5003.21106,
+                                      'average': 1.0, 'cost': 5003.21106,
+                                      'trades': [{'id': 'TS'}]}
+        self.exchange.order_trades['S1'] = [{'amount': 5003.21106, 'cost': 5003.21106}]
+        self.bot.buy_order_id = 'B1'
+        with patch('spread_bot.log_trade'), contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(await self.bot.check_buy_filled())
+            self.bot.sell_order_id = 'S1'
+            self.assertTrue(await self.bot.check_sell_filled())
+        self.assertAlmostEqual(self.bot.total_profit, 0.500321106, places=8)
 
     def test_restart_keeps_totals(self):
         save_totals(0.37, 37, self.totals_file)

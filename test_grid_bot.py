@@ -522,6 +522,24 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
         await send_summary([self.bot], self.bot.alert, 0)
         self.assertEqual(load_grid_state(self.state_file)['trades'], [{'side': 'long'}])
 
+    # ---------- exact cost from trades (Kraken) ----------
+
+    async def test_entry_cost_from_trades_not_average(self):
+        await self.bot.run_cycle()
+        buy = self.exchange.open_at('buy', 0.36964)
+        self.exchange.fill(buy['id'])
+        # Kraken cuts the average off: pretend it said 0.36963, but the trade was 0.36964
+        order = self.exchange.orders[buy['id']]
+        order['average'] = 0.36963
+        order['cost'] = order['filled'] * 0.36963
+        order['trades'] = [{'id': 'T1'}]
+        # by hand: 165.02 x 0.36964 = 60.9980728
+        self.exchange.fetch_order_trades = lambda oid, sym, params=None: [
+            {'amount': 165.02, 'cost': 60.9980728}]
+        await self.bot.run_cycle()
+        trade = [t for t in self.bot.trades if t['entry_price'] == 0.36964][0]
+        self.assertEqual(trade['entry_cost'], 60.9980728)
+
     # ---------- mid-price ----------
 
     async def test_cycle_uses_mid_price_not_stale_last(self):

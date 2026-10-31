@@ -4,6 +4,7 @@ from telegram import Bot
 from log_trade import log_trade
 from state import save_state, load_state, save_totals, load_totals
 from telegram_send import send_with_retries
+from order_cost import trades_cost
 
 
 class OrderProblem(Exception):
@@ -61,7 +62,11 @@ class SpreadBot:
         return cost, 0.0
 
     def order_cost(self, order):
-        """USD value of what actually filled."""
+        """USD value of what actually filled.
+        Kraken: from the order's trades (exact). Otherwise from the order."""
+        exact = trades_cost(self.exchange, order, self.pair)
+        if exact is not None:
+            return exact
         if order.get('cost'):
             return float(order['cost'])
         price = float(order.get('average') or order.get('price'))
