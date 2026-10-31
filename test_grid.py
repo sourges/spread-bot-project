@@ -2,7 +2,7 @@ import unittest
 from grid import grid_levels, split_levels, centered_grid, tick_to_decimals, geometric_levels, free_levels_below, free_levels_above, exit_order, neighbor_level, live_entries, plan_entries
 
 from grid import order_amount, bot_name, check_config, open_positions, funding_needs, range_position
-from grid import preview_lines
+from grid import preview_lines, market_price
 
 
 class LevelTest(unittest.TestCase):
@@ -460,6 +460,23 @@ class PreviewLinesTest(unittest.TestCase):
             "  new: BUY 8.33 @ 1.2  (exit @ 1.3)",
             "  new: SELL @ 1.3  (below min amount, will not place)",
         ])
+
+
+class MarketPriceTest(unittest.TestCase):
+
+    def test_mid_of_bid_and_ask(self):
+        # (1.0 + 1.2) / 2 = 1.1, last is ignored
+        self.assertAlmostEqual(market_price({'bid': 1.0, 'ask': 1.2, 'last': 0.9}), 1.1)
+
+    def test_no_bid_uses_last(self):
+        self.assertEqual(market_price({'bid': None, 'ask': 1.2, 'last': 0.9}), 0.9)
+
+    def test_no_bid_ask_keys_uses_last(self):
+        self.assertEqual(market_price({'last': 0.9}), 0.9)
+
+    def test_crossed_book_uses_last(self):
+        # ask below bid only happens with bad data: don't trust it
+        self.assertEqual(market_price({'bid': 1.2, 'ask': 1.0, 'last': 0.9}), 0.9)
 
 
 if __name__ == '__main__':

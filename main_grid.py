@@ -4,9 +4,11 @@ import ccxt
 from dotenv import load_dotenv
 from telegram import Bot
 from telegram.request import HTTPXRequest
-from grid import geometric_levels, tick_to_decimals, check_config, preview_lines
+from grid import geometric_levels, tick_to_decimals, check_config, preview_lines, market_price
 from grid_state import load_grid_state
-from grid_bot import GridBot, run_bots, print_status, daily_summary, check_funding
+from telegram_send import send_with_retries
+from grid_bot import (GridBot, run_bots, print_status, daily_summary, check_funding,
+                      write_error, ERRORS_FILE)
 from bots_config import BOTS, CHECK_INTERVAL, DRY_RUN, SUMMARY_HOUR
 
 load_dotenv()
@@ -54,7 +56,7 @@ def build_bot(exchange, cfg, alert):
     # so after a restart it shows what's really open, not a fresh grid.
     state = load_grid_state(bot.state_file)
     trades = state['trades'] if state else []
-    price = exchange.fetch_ticker(pair)['last']
+    price = market_price(exchange.fetch_ticker(pair))
     print(f"\n=== {exchange.id} {pair} ===")
     if state and state['levels'] != levels:
         print("  (settings changed: using the SAVED levels so open trades still match)")
@@ -98,12 +100,19 @@ async def main():
                    request=HTTPXRequest(connect_timeout=30, read_timeout=30,
                                         write_timeout=30, pool_timeout=30))
 
+    async def send(message):
+        await telegram.send_message(chat_id=CHAT_ID, text=message)
+
+    def telegram_log(line):
+        print(line)
+        try:
+            write_error(ERRORS_FILE, 'telegram', 'sending alert', line)
+        except OSError:
+            pass
+
     async def alert(message):
         print(message)
-        try:
-            await telegram.send_message(chat_id=CHAT_ID, text=message)
-        except Exception as e:
-            print(f"[TELEGRAM ERROR] {e}")
+        await send_with_retries(send, message, log=telegram_log)    # up to 3 tries, never raises
 
     exchanges = {}
     bots = []

@@ -309,3 +309,15 @@ def preview_lines(levels, price, trades, count, usd_per_entry, amount_decimals, 
             continue
         lines.append(f"  new: {side} {amount} @ {t['entry_price']}  (exit @ {t['exit_price']})")
     return lines
+
+
+def market_price(ticker):
+    """The price the grid plans around.
+    Mid of best bid and best ask when both are there, else the last trade.
+    'last' only moves when someone trades, so on a quiet pair (CAKE, ANKR)
+    or right after an outage it can be stale while the order book has moved.
+    e.g. bid 1.0, ask 1.2, last 0.9 -> 1.1"""
+    bid, ask = ticker.get('bid'), ticker.get('ask')
+    if bid and ask and ask >= bid:
+        return (bid + ask) / 2
+    return ticker['last']

@@ -24,6 +24,8 @@ class FakeExchange:
         self.lose_next_reply = False    # next order goes through, but we get an error back
         self.no_funds_for = set()       # 'buy'/'sell': entries on that side fail for lack of funds
         self.balance = {}               # what fetch_balance() reports as 'total'
+        self.bid = None                 # set both to test the bid/ask mid-price
+        self.ask = None
 
     def create_order(self, symbol, type, side, amount, price, params=None):
         if side in self.no_funds_for and (params or {}).get('postOnly'):
@@ -55,7 +57,7 @@ class FakeExchange:
         order['status'] = 'canceled'
 
     def fetch_ticker(self, symbol):
-        return {'last': self.price}
+        return {'last': self.price, 'bid': self.bid, 'ask': self.ask}
 
     def fetch_open_orders(self, symbol):
         return [dict(o) for o in self.orders.values() if o['status'] == 'open']
@@ -98,6 +100,7 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
         self.state_file = 'test_grid_state.json'
         self.log_file = 'test_grid_trades.txt'
         self.csv_file = 'test_grid_completed.csv'
+        self.errors_file = 'test_grid_errors.txt'      # never the real grid_errors.txt
         self.exchange = FakeExchange(price=0.3795)
         self.alerts = []
         self.bot = self.make_bot(self.levels)
@@ -108,10 +111,10 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
         return GridBot(self.exchange, 'CRV/USD', levels, 61, 2, 20, alert,
                        count=2, check_interval=0,
                        state_file=self.state_file, log_file=self.log_file,
-                       csv_file=self.csv_file)
+                       csv_file=self.csv_file, errors_file=self.errors_file)
 
     def tearDown(self):
-        for f in (self.state_file, self.log_file, self.csv_file):
+        for f in (self.state_file, self.log_file, self.csv_file, self.errors_file):
             if os.path.exists(f):
                 os.remove(f)
 
@@ -247,7 +250,8 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
     def test_default_file_names_include_exchange_and_pair(self):
         async def alert(message):
             pass
-        bot = GridBot(self.exchange, 'CRV/USD', self.levels, 61, 2, 20, alert)
+        bot = GridBot(self.exchange, 'CRV/USD', self.levels, 61, 2, 20, alert,
+                      errors_file=self.errors_file)
         self.assertEqual(bot.state_file, 'grid_state_kraken_CRV_USD.json')
         self.assertEqual(bot.log_file, 'grid_trades_kraken_CRV_USD.txt')
 
@@ -280,7 +284,8 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
 
         broken = GridBot(BrokenExchange(price=0.3795), 'CAKE/USD', self.levels, 61, 2, 20,
                          alert, count=2, check_interval=0,
-                         state_file='test_state_cake.json', log_file='test_log_cake.txt')
+                         state_file='test_state_cake.json', log_file='test_log_cake.txt',
+                         errors_file=self.errors_file)
         try:
             # run_bots never ends on its own while one bot is healthy, so stop it after 0.5s
             with self.assertRaises(asyncio.TimeoutError):
@@ -517,6 +522,84 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
         await send_summary([self.bot], self.bot.alert, 0)
         self.assertEqual(load_grid_state(self.state_file)['trades'], [{'side': 'long'}])
 
+    # ---------- mid-price ----------
+
+    async def test_cycle_uses_mid_price_not_stale_last(self):
+        # last trade 0.3795 is stale; the order book is at 0.3600 / 0.3610 -> mid 0.3605.
+        # By hand, around 0.3605: buys 0.35884, 0.34835; sells 0.36964, 0.38077.
+        # (Using last 0.3795 it would have been buys 0.36964, 0.35884 and sell 0.38077.)
+        self.exchange.bid, self.exchange.ask = 0.3600, 0.3610
+        await self.bot.run_cycle()
+        prices = sorted((o['side'], o['price']) for o in self.exchange.fetch_open_orders('CRV/USD'))
+        self.assertEqual(prices, [('buy', 0.34835), ('buy', 0.35884),
+                                  ('sell', 0.36964), ('sell', 0.38077)])
+
+    # ---------- errors file ----------
+
+    def error_lines(self):
+        if not os.path.exists(self.errors_file):
+            return []
+        with open(self.errors_file, encoding='utf-8') as f:
+            return f.read().splitlines()
+
+    async def run_briefly(self):
+        """run_continuous for a moment; it never ends by itself while healthy."""
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(asyncio.TimeoutError):
+                await asyncio.wait_for(self.bot.run_continuous(), timeout=0.3)
+
+    async def test_price_glitch_goes_to_errors_file(self):
+        real = self.exchange.fetch_ticker
+        calls = []
+
+        def glitch_once(symbol):
+            calls.append(symbol)
+            if len(calls) == 1:
+                raise ccxt.ExchangeError('kraken {"error":["EGeneral:No data"],"result":{}}')
+            return real(symbol)
+        self.exchange.fetch_ticker = glitch_once
+
+        await self.run_briefly()
+        lines = self.error_lines()
+        self.assertEqual(len(lines), 1)
+        self.assertIn(" | kraken CRV/USD | price check | Exchange glitch, retrying next cycle: ",
+                      lines[0])
+        self.assertIn("EGeneral:No data", lines[0])
+
+    async def test_order_check_glitch_names_the_order(self):
+        await self.bot.run_cycle()              # places buys 0.36964, 0.35884 and sell 0.38077
+        real = self.exchange.fetch_order
+        calls = []
+
+        def glitch_once(order_id, symbol):
+            calls.append(order_id)
+            if len(calls) == 1:
+                raise ccxt.ExchangeError('kraken {"error":["EGeneral:No data"],"result":{}}')
+            return real(order_id, symbol)
+        self.exchange.fetch_order = glitch_once
+
+        await self.run_briefly()
+        lines = self.error_lines()
+        self.assertEqual(len(lines), 1)
+        self.assertIn(" | order check (entry 0.36964) | ", lines[0])   # first trade checked
+
+    async def test_stop_goes_to_errors_file(self):
+        def broken(symbol):
+            raise ccxt.ExchangeError("something new")
+        self.exchange.fetch_ticker = broken
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(ccxt.ExchangeError):
+                await asyncio.wait_for(self.bot.run_continuous(), timeout=1)
+        lines = self.error_lines()
+        self.assertEqual(len(lines), 1)
+        self.assertIn(" | price check | STOPPED - unexpected error: ExchangeError: something new",
+                      lines[0])
+
+    async def test_healthy_run_writes_nothing(self):
+        await self.run_briefly()
+        self.assertEqual(self.error_lines(), [])
+
     # ---------- exchange glitches ----------
 
     async def test_kraken_no_data_is_retried(self):
@@ -555,7 +638,8 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
                 raise RuntimeError("boom")
         broken = GridBot(BrokenExchange(price=0.3795), 'CAKE/USD', self.levels, 61, 2, 20,
                          self.bot.send, count=2, check_interval=0,
-                         state_file='test_state_cake.json', log_file='test_log_cake.txt')
+                         state_file='test_state_cake.json', log_file='test_log_cake.txt',
+                         errors_file=self.errors_file)
         stopped = []
 
         async def helper():
@@ -721,7 +805,8 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
     def test_default_csv_name_includes_exchange_and_pair(self):
         async def alert(message):
             pass
-        bot = GridBot(self.exchange, 'CRV/USD', self.levels, 61, 2, 20, alert)
+        bot = GridBot(self.exchange, 'CRV/USD', self.levels, 61, 2, 20, alert,
+                      errors_file=self.errors_file)
         self.assertEqual(bot.csv_file, 'grid_completed_kraken_CRV_USD.csv')
 
 

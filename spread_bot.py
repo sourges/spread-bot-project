@@ -3,6 +3,7 @@ from datetime import datetime
 from telegram import Bot
 from log_trade import log_trade
 from state import save_state, load_state, save_totals, load_totals
+from telegram_send import send_with_retries
 
 
 class OrderProblem(Exception):
@@ -326,13 +327,11 @@ class SpreadBot:
         """
         Send message to Telegram
         """
-        try:
-            # Direct await - clean and simple!
-            await self.telegram_bot.send_message(
-                chat_id=self.chat_id, 
-                text=message
-            )
+        async def send(text):
+            await self.telegram_bot.send_message(chat_id=self.chat_id, text=text)
+
+        # up to 3 tries on time-outs/network problems, never raises
+        if await send_with_retries(send, message):
             print(f"[TELEGRAM SENT] {message}")
-        except Exception as e:
-            print(f"[TELEGRAM ERROR] Failed to send: {e}")
+        else:
             print(f"[MESSAGE] {message}")

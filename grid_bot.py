@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timedelta
 import ccxt
 from grid import (plan_entries, exit_order, order_amount, bot_name,
-                  open_positions, funding_needs, range_position)
+                  open_positions, funding_needs, range_position, market_price)
 from grid_state import save_grid_state, load_grid_state
 from log_trade import log_trade
 
@@ -24,6 +24,17 @@ def write_completed(filename, row):
         if new_file:
             writer.writeheader()
         writer.writerow(row)
+
+
+ERRORS_FILE = 'grid_errors.txt'     # one file for all bots, so glitches line up in time
+
+
+def write_error(filename, who, step, message):
+    """Add one line to the errors file:
+    2026-10-29 22:25:41 | kraken CRV/USD | price check | kraken {"error":...}"""
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    with open(filename, 'a', encoding='utf-8') as f:
+        f.write(f"{now} | {who} | {step} | {message}\n")
 
 
 # Exchange errors that are just a temporary glitch on the exchange's side.
@@ -47,7 +58,7 @@ class OrderProblem(Exception):
 class GridBot:
     def __init__(self, exchange, pair, levels, usd_per_entry, amount_decimals,
                  min_amount, alert, count=2, check_interval=60,
-                 state_file=None, log_file=None, csv_file=None):
+                 state_file=None, log_file=None, csv_file=None, errors_file=None):
         """
         exchange:        ccxt exchange object (Kraken now, Coinbase later)
         levels:          grid prices from geometric_levels()
@@ -58,6 +69,7 @@ class GridBot:
         count:           live entries per side (2 = 2 buys + 2 sells)
         state_file, log_file: leave as None to name them after the bot,
                          e.g. grid_state_kraken_CRV_USD.json
+        errors_file:     None = the shared grid_errors.txt
         """
         self.exchange = exchange
         self.pair = pair
@@ -73,6 +85,8 @@ class GridBot:
         self.state_file = state_file or f"grid_state_{self.name}.json"
         self.log_file = log_file or f"grid_trades_{self.name}.txt"
         self.csv_file = csv_file or f"grid_completed_{self.name}.csv"
+        self.errors_file = errors_file or ERRORS_FILE
+        self.step = 'starting'      # what the bot is doing right now, for the errors file
 
         self.coin = pair.split('/')[0]      # 'CRV'
         self.quote = pair.split('/')[1]     # 'USD'
@@ -97,6 +111,15 @@ class GridBot:
     def log(self, message):
         """Terminal line, labelled like the alerts: [kraken CRV/USD] ..."""
         print(f"[{self.label}] {message}")
+
+    def log_error(self, message):
+        """Like log(), and also written to the errors file with the time
+        and the step that failed, so you can look back later."""
+        self.log(message)
+        try:
+            write_error(self.errors_file, self.label, self.step, message)
+        except OSError as e:
+            print(f"[{self.label}] could not write {self.errors_file}: {e}")   # never stop trading over this
 
     async def alert(self, message):
         """Every alert starts with the bot's label, so with several bots
@@ -219,6 +242,7 @@ class GridBot:
         or we crashed right after placing it). If so, use it instead of placing a second one."""
         for attempt in range(1, max_attempts + 1):
             try:
+                self.step = f"placing exit ({side} {price})"
                 existing = self.find_order_by_tag(tag)
                 if existing is not None:
                     self.log(f"Exit {side} already on the exchange ({existing['id']}), not placing again.")
@@ -227,7 +251,7 @@ class GridBot:
                                                    self.tag_params(tag))
                 return order['id']
             except Exception as e:
-                self.log(f"Exit {side} failed (attempt {attempt}/{max_attempts}): {e}")
+                self.log_error(f"Exit {side} failed (attempt {attempt}/{max_attempts}): {e}")
                 if attempt < max_attempts:
                     await asyncio.sleep(self.check_interval)
         raise OrderProblem(f"Could not place exit {side} {amount} {self.coin} @ {price}.")
@@ -243,6 +267,7 @@ class GridBot:
                 await self.check_exit(trade)
 
     async def check_entry(self, trade):
+        self.step = f"order check (entry {trade['entry_price']})"
         order = self.exchange.fetch_order(trade['entry_id'], self.pair)
         if order['status'] == 'closed':
             await self.entry_filled(trade, order)
@@ -293,6 +318,7 @@ class GridBot:
                          f"Exit {exit_side['side']} placed @ {trade['exit_price']}")
 
     async def check_exit(self, trade):
+        self.step = f"order check (exit {trade['exit_price']})"
         order = self.exchange.fetch_order(trade['exit_id'], self.pair)
         if order['status'] == 'closed':
             await self.exit_filled(trade, order)
@@ -335,6 +361,7 @@ class GridBot:
     # ---------- step 2: cancel entries that are too far away ----------
 
     async def cancel_entry(self, trade):
+        self.step = f"cancel (entry {trade['entry_price']})"
         try:
             self.exchange.cancel_order(trade['entry_id'], self.pair)
         except (ccxt.OrderNotFound, ccxt.InvalidOrder) as e:
@@ -360,6 +387,7 @@ class GridBot:
         plan = plan_entries(self.levels, price, self.trades, self.count)
         for trade in plan['place']:
             side = 'buy' if trade['side'] == 'long' else 'sell'
+            self.step = f"placing entry ({side} {trade['entry_price']})"
             try:
                 amount = order_amount(self.usd_per_entry, trade['entry_price'],
                                       self.amount_decimals, self.min_amount)
@@ -374,12 +402,12 @@ class GridBot:
                     await self.alert(f"⚠️ Not enough {currency} for {trade['side']} entry "
                                      f"@ {trade['entry_price']}. Will keep trying every cycle "
                                      f"(no more alerts until a {trade['side']} entry works).")
-                self.log(f"Not enough funds for {trade['side']} entry @ {trade['entry_price']}: {e}")
+                self.log_error(f"Not enough funds for {trade['side']} entry @ {trade['entry_price']}: {e}")
                 continue
             except Exception as e:
                 # e.g. post-only rejected because price moved. Nothing is at risk,
                 # so just try again next cycle.
-                self.log(f"Could not place {trade['side']} entry @ {trade['entry_price']}: {e}")
+                self.log_error(f"Could not place {trade['side']} entry @ {trade['entry_price']}: {e}")
                 continue
             self.funds_alerted.discard(trade['side'])      # funds are fine again
             trade['amount'] = amount
@@ -391,7 +419,8 @@ class GridBot:
 
     async def run_cycle(self):
         await self.check_fills()                                  # 1. fills first, so statuses are current
-        price = self.exchange.fetch_ticker(self.pair)['last']
+        self.step = 'price check'
+        price = market_price(self.exchange.fetch_ticker(self.pair))   # bid/ask mid, else last
         await self.check_range(price)
         plan = plan_entries(self.levels, price, self.trades, self.count)
         for trade in plan['cancel']:                              # 2. cancel far entries
@@ -432,16 +461,17 @@ class GridBot:
                     await self.run_cycle()
                 except ccxt.NetworkError as e:
                     # Internet or Kraken hiccup: nothing changed, just try again.
-                    self.log(f"Network problem, retrying next cycle: {e}")
+                    self.log_error(f"Network problem, retrying next cycle: {e}")
                 except ccxt.ExchangeError as e:
                     if not is_temporary(e):
                         raise                   # anything else: stop (handled below)
                     # Still visible if it keeps happening: "no cycle for 10 min"
                     # on screen and in the 9 AM summary.
-                    self.log(f"Exchange glitch, retrying next cycle: {e}")
+                    self.log_error(f"Exchange glitch, retrying next cycle: {e}")
                 await asyncio.sleep(self.check_interval)
         except OrderProblem as e:
             self.status = 'stopped'
+            self.log_error(f"STOPPED - order problem: {e}")
             await self.alert(f"🛑 GRID BOT STOPPED - order problem\n{e}\n"
                              "Check the exchange before restarting.")
             print(e)
@@ -453,6 +483,7 @@ class GridBot:
         except Exception as e:
             # Anything unexpected: stop instead of looping blindly with real money.
             self.status = 'stopped'
+            self.log_error(f"STOPPED - unexpected error: {type(e).__name__}: {e}")
             await self.alert(f"🛑 GRID BOT STOPPED - unexpected error\n{type(e).__name__}: {e}")
             raise
 
@@ -624,7 +655,7 @@ async def check_funding(bots, alert):
             state = load_grid_state(bot.state_file)
             trades = state['trades'] if state else []
             levels = state['levels'] if state else bot.levels
-            price = bot.exchange.fetch_ticker(bot.pair)['last']
+            price = market_price(bot.exchange.fetch_ticker(bot.pair))
             needs = funding_needs(levels, price, trades, bot.usd_per_entry)
             rows.append((bot.exchange.id, bot.label, bot.quote, bot.coin, needs))
             exchanges[bot.exchange.id] = bot.exchange
