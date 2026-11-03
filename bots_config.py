@@ -13,27 +13,27 @@
 BOTS = [
     {'exchange': 'kraken', 'pair': 'CRV/USD',
      'lower': 0.1431, 'upper': 1.1442, 'levels': 71,
-     'usd_per_entry': 61, 'count': 2},
+     'usd_per_entry': 65, 'count': 2},
 
     {'exchange': 'coinbase', 'pair': 'CRV/USDC',
     'lower': 0.2, 'upper': 1.2, 'levels': 61,
-    'usd_per_entry': 60, 'count': 2},
+    'usd_per_entry': 65, 'count': 2},
 
     {'exchange': 'kraken', 'pair': 'CAKE/USD',
      'lower': 0.9996, 'upper': 4.693, 'levels': 53,
-     'usd_per_entry': 40, 'count': 2},
+     'usd_per_entry': 45, 'count': 2},
 
     {'exchange': 'coinbase', 'pair': 'ANKR/USDC',
      'lower': 0.00389, 'upper': 0.0055, 'levels': 13,
-     'usd_per_entry': 25, 'count': 2},
+     'usd_per_entry': 30, 'count': 2},
 
     {'exchange': 'coinbase', 'pair': 'UNI/USDC',
      'lower': 2.516, 'upper': 16.816, 'levels': 65,
-     'usd_per_entry': 82, 'count': 2},
+     'usd_per_entry': 85, 'count': 2},
 
     {'exchange': 'coinbase', 'pair': 'DOGE/USDC',
       'lower': 0.05, 'upper': 0.25, 'levels': 55, 
-      'usd_per_entry': 54, 'count': 2},
+      'usd_per_entry': 58, 'count': 2},
     
 ]
 
