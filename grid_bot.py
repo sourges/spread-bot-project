@@ -549,12 +549,17 @@ async def print_status(bots, interval):
 
 # ---------- once a day: Telegram summary ----------
 
-def seconds_until(hour, now):
-    """Seconds from now until the next time the clock shows hour:00."""
+def next_time(hour, now):
+    """The next time the clock shows hour:00 (tomorrow if it's already past)."""
     target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
     if target <= now:
         target += timedelta(days=1)
-    return (target - now).total_seconds()
+    return target
+
+
+def seconds_until(hour, now):
+    """Seconds from now until the next time the clock shows hour:00."""
+    return (next_time(hour, now) - now).total_seconds()
 
 
 def money(x):
@@ -616,10 +621,23 @@ async def send_summary(bots, alert, now):
             bot.save()              # so a restart after 9 AM doesn't bring back yesterday's counts
 
 
-async def daily_summary(bots, alert, hour):
-    """Sleep until hour:00 on the PC's clock, send the summary, repeat."""
+async def daily_summary(bots, alert, hour, now=datetime.now, sleep=asyncio.sleep,
+                        check_every=600):
+    """Send the summary when the PC's clock shows hour:00, every day.
+
+    Sleeps in short steps (10 min) and looks at the CLOCK after each one,
+    instead of one 24-hour sleep. A 24-hour sleep counts real time, so when
+    daylight saving moved the clock back an hour (Nov 1) it woke at 8:00,
+    sent, then sent again at 9:00. Checking the clock keeps it at 9:00
+    through clock changes, and if the PC sleeps or its clock is adjusted.
+    now, sleep: only replaced in tests (a fake clock)."""
     while True:
-        await asyncio.sleep(seconds_until(hour, datetime.now()))
+        target = next_time(hour, now())
+        while True:
+            left = (target - now()).total_seconds()
+            if left <= 0:
+                break
+            await sleep(min(left, check_every))
         try:
             await send_summary(bots, alert, time.monotonic())
         except Exception as e:

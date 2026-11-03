@@ -6,6 +6,8 @@ import os
 import unittest
 import ccxt
 from datetime import datetime
+from datetime import timedelta
+from grid_bot import daily_summary
 from grid_bot import (GridBot, OrderProblem, run_bots, status_lines, seconds_until,
                       summary_text, send_summary, funding_report, check_funding)
 from grid_state import load_grid_state, save_grid_state
@@ -424,6 +426,58 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seconds_until(9, datetime(2026, 10, 22, 8, 0)), 3600)      # 1 hour
         self.assertEqual(seconds_until(9, datetime(2026, 10, 22, 9, 0)), 86400)     # exactly 9:00 -> tomorrow
         self.assertEqual(seconds_until(9, datetime(2026, 10, 22, 10, 30)), 81000)   # 22.5 hours
+
+    # ---------- daily summary vs. daylight saving ----------
+
+    async def summary_clock_times(self, start, clock_change_at=None, change=timedelta(0),
+                                  days=2):
+        """Run daily_summary on a fake clock for `days` real days.
+        start: what the clock shows at the start.
+        clock_change_at: real seconds after start when the clock jumps by `change`
+        (e.g. -1 hour for the November change). Returns the clock times the
+        summary was sent at."""
+        real = [0.0]                                    # real seconds that have passed
+        sent = []
+
+        def now():
+            shift = change if clock_change_at is not None and real[0] >= clock_change_at \
+                else timedelta(0)
+            return start + timedelta(seconds=real[0]) + shift
+
+        class Done(Exception):
+            pass
+
+        async def sleep(seconds):
+            real[0] += seconds
+            if real[0] > days * 86400:
+                raise Done()
+
+        async def alert(message):
+            sent.append(now())
+
+        with self.assertRaises(Done):
+            await daily_summary([], alert, 9, now=now, sleep=sleep)
+        return sent
+
+    async def test_summary_normal_days_at_9(self):
+        sent = await self.summary_clock_times(datetime(2026, 10, 30, 12, 0))
+        self.assertEqual(sent, [datetime(2026, 10, 31, 9, 0), datetime(2026, 11, 1, 9, 0)])
+
+    async def test_summary_clock_goes_back_one_summary_at_9(self):
+        # Sat Oct 31 9:00 summary sent. Sun Nov 1 2:00 the clock goes back to 1:00.
+        # Old code: 24 h sleep -> woke at 8:00 (sent) and again at 9:00.
+        # By hand: start Sat 9:00:01, clock change 17 h later (Sun 2:00:01).
+        sent = await self.summary_clock_times(datetime(2026, 10, 31, 9, 0, 1),
+                                              clock_change_at=17 * 3600 - 1,
+                                              change=timedelta(hours=-1), days=1.5)
+        self.assertEqual(sent, [datetime(2026, 11, 1, 9, 0)])     # once, at 9, no 8:00
+
+    async def test_summary_clock_goes_forward_still_at_9(self):
+        # spring: clock jumps 2:00 -> 3:00. Old code would have sent at 10:00.
+        sent = await self.summary_clock_times(datetime(2026, 3, 7, 9, 0, 1),
+                                              clock_change_at=17 * 3600 - 1,
+                                              change=timedelta(hours=1), days=1.5)
+        self.assertEqual(sent, [datetime(2026, 3, 8, 9, 0)])
 
     async def test_status_line_after_first_cycle(self):
         self.assertEqual(status_lines([self.bot], 0), ["[kraken CRV/USD] starting..."])

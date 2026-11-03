@@ -468,6 +468,13 @@ class MarketPriceTest(unittest.TestCase):
         # (1.0 + 1.2) / 2 = 1.1, last is ignored
         self.assertAlmostEqual(market_price({'bid': 1.0, 'ask': 1.2, 'last': 0.9}), 1.1)
 
+    def test_mid_has_no_float_noise(self):
+        # (0.283 + 0.28301) / 2 is 0.28300499999999995 without rounding
+        price = market_price({'bid': 0.283, 'ask': 0.28301, 'last': 0.2})
+        self.assertEqual(str(price), '0.283005')
+        self.assertEqual(str(market_price({'bid': 0.0039097, 'ask': 0.0039098, 'last': 0.1})),
+                         '0.00390975')
+
     def test_no_bid_uses_last(self):
         self.assertEqual(market_price({'bid': None, 'ask': 1.2, 'last': 0.9}), 0.9)
 

@@ -319,5 +319,8 @@ def market_price(ticker):
     e.g. bid 1.0, ask 1.2, last 0.9 -> 1.1"""
     bid, ask = ticker.get('bid'), ticker.get('ask')
     if bid and ask and ask >= bid:
-        return (bid + ask) / 2
+        # round(): (0.283 + 0.28301) / 2 is 0.28300499999999995 in a computer.
+        # 10 decimals is far finer than any tick, so trading is unchanged,
+        # and the screen shows 0.283005.
+        return round((bid + ask) / 2, 10)
     return ticker['last']
