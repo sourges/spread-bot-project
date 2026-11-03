@@ -108,6 +108,7 @@ class GridBot:
         self.last_price = None      # price from the last cycle (for the summary)
         self.funds_alerted = set()  # sides ('long'/'short') already alerted for low funds
         self.range_state = None     # 'inside' / 'below' / 'above'; None before the first cycle
+        self.alerted_range = None   # what the last Telegram range alert said (see check_range)
 
     def log(self, message):
         """Terminal line, labelled like the alerts: [kraken CRV/USD] ..."""
@@ -439,23 +440,52 @@ class GridBot:
         self.last_cycle = time.monotonic()
         self.last_price = price
 
+    def back_in_prices(self):
+        """How far back inside the price must be before Telegram says BACK IN RANGE:
+        half a grid step past the edge (halfway to the next level).
+        ANKR: (0.00389 + 0.0040039) / 2 = 0.00394695."""
+        low = round((self.levels[0] + self.levels[1]) / 2, 10)
+        high = round((self.levels[-2] + self.levels[-1]) / 2, 10)
+        return low, high
+
     async def check_range(self, price):
-        """Alert ONCE when the price leaves the grid's range, and once when it's back.
+        """Range alerts, without the ping-pong when the price sits on the edge.
+
+        Screen: every change shows right away (status line + one line here).
+        Telegram: OUT OF RANGE once when it leaves. BACK IN RANGE only when the
+        price is half a grid step back inside, so flickers around the edge
+        (ANKR, Nov 1: 12 pings in 90 min) stay quiet.
         Trading doesn't change: past the ends there are simply no levels to place."""
         new = range_position(self.levels, price)
-        if new == self.range_state:
-            return
         lower, upper = self.levels[0], self.levels[-1]
-        if new == 'below':
+        back_low, back_high = self.back_in_prices()
+
+        # --- screen: every change, right away ---
+        if self.range_state is not None and new != self.range_state:
+            if new == 'inside' and self.alerted_range == 'below' and price < back_low:
+                self.log(f"Back inside the range at {price} (Telegram waits until {back_low})")
+            elif new == 'inside' and self.alerted_range == 'above' and price > back_high:
+                self.log(f"Back inside the range at {price} (Telegram waits until {back_high})")
+            elif new != 'inside' and self.alerted_range == new:
+                self.log(f"Out of range again ({new}) at {price} (already alerted)")
+        self.range_state = new
+
+        # --- Telegram: only clear changes ---
+        if new == 'below' and self.alerted_range != 'below':
             await self.alert(f"⚠️ OUT OF RANGE: price {price} is BELOW the range ({lower}).\n"
                              f"No new buys until it's back above {lower}. Open exits still work.")
-        elif new == 'above':
+            self.alerted_range = 'below'
+        elif new == 'above' and self.alerted_range != 'above':
             await self.alert(f"⚠️ OUT OF RANGE: price {price} is ABOVE the range ({upper}).\n"
                              f"No new sells until it's back below {upper}. Open exits still work.")
-        elif self.range_state is not None:
-            # back inside (no alert on a normal start inside the range)
-            await self.alert(f"✅ BACK IN RANGE: price {price} ({lower}–{upper}).")
-        self.range_state = new
+            self.alerted_range = 'above'
+        elif new == 'inside':
+            if self.alerted_range is None:
+                self.alerted_range = 'inside'           # normal start inside: no alert
+            elif self.alerted_range == 'below' and price >= back_low or \
+                    self.alerted_range == 'above' and price <= back_high:
+                await self.alert(f"✅ BACK IN RANGE: price {price} ({lower}–{upper}).")
+                self.alerted_range = 'inside'
 
     async def run_continuous(self):
         try:

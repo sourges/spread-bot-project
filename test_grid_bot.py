@@ -842,6 +842,54 @@ class GridBotTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("price 0.39 is ABOVE the range (0.38077)", self.range_alerts()[0])
 
 
+    # ---------- edge flicker (ANKR, Nov 1) ----------
+    # back-in prices by hand: (0.32829 + 0.33818) / 2 = 0.333235
+    #                         (0.36964 + 0.38077) / 2 = 0.375205
+
+    async def cycle_at(self, price):
+        self.exchange.price = price
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            await self.bot.run_cycle()
+        return out.getvalue()
+
+    async def test_flicker_at_bottom_sends_one_alert(self):
+        await self.cycle_at(0.3795)                 # inside
+        await self.cycle_at(0.32)                   # below -> OUT alert
+        screen = await self.cycle_at(0.3290)        # just inside, under 0.333235
+        self.assertNotIn('OUT OF RANGE', self.bot.status_line)       # screen: inside now
+        self.assertIn("Back inside the range at 0.329 (Telegram waits until 0.333235)", screen)
+        screen = await self.cycle_at(0.3282)        # below again
+        self.assertIn("Out of range again (below) at 0.3282 (already alerted)", screen)
+        self.assertTrue(self.bot.status_line.endswith(" | OUT OF RANGE (below)"))
+        await self.cycle_at(0.3290)
+        self.assertEqual(len(self.range_alerts()), 1)                # still just the first one
+
+        await self.cycle_at(0.334)                  # past 0.333235: clearly back
+        self.assertEqual(len(self.range_alerts()), 2)
+        self.assertIn("✅ BACK IN RANGE: price 0.334", self.range_alerts()[1])
+
+    async def test_back_in_exactly_at_half_step(self):
+        await self.cycle_at(0.32)                   # start below -> OUT alert
+        await self.cycle_at(0.333235)               # exactly half a step: counts
+        self.assertEqual(len(self.range_alerts()), 2)
+
+    async def test_flicker_at_top_sends_one_alert(self):
+        await self.cycle_at(0.39)                   # above -> OUT alert
+        await self.cycle_at(0.380)                  # just inside, over 0.375205
+        await self.cycle_at(0.381)                  # above again
+        await self.cycle_at(0.380)
+        self.assertEqual(len(self.range_alerts()), 1)
+        await self.cycle_at(0.375)                  # under 0.375205: clearly back
+        self.assertEqual(len(self.range_alerts()), 2)
+        self.assertIn("✅ BACK IN RANGE: price 0.375", self.range_alerts()[1])
+
+    async def test_jump_from_below_to_above_alerts(self):
+        await self.cycle_at(0.32)                   # below
+        await self.cycle_at(0.39)                   # straight to above
+        self.assertEqual(len(self.range_alerts()), 2)
+        self.assertIn("is ABOVE the range", self.range_alerts()[1])
+
     # ---------- completed trades CSV ----------
 
     def read_csv(self):
