@@ -166,6 +166,11 @@ grid_state_*.json
 grid_state_*.json.tmp
 grid_completed_*.csv
 grid_trades_*.txt
+grid_errors.txt
+trend_paper_state.json
+trend_paper_state.json.tmp
+trend_paper_trades.csv
+trend_errors.txt
 
 # Spyder project settings
 .spyderproject
