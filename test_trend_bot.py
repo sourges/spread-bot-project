@@ -11,6 +11,7 @@ import ccxt
 import main_trend
 from trend_bot import (
     DAY_MS,
+    SUMMARY_KEY,
     append_trade,
     coin_line,
     date_ms,
@@ -309,12 +310,15 @@ class FakeExchange:
         return self.data[coin]
 
 
-class TestRunOnce(unittest.TestCase):
+class RunOnceSetup:
+    """Shared setup for the run_once tests (not a test class itself)."""
+
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.settings = SimpleNamespace(
             COINS=['AAA', 'BBB'], ENTRY_DAYS=3, EXIT_DAYS=2, FEES=NO_FEES, USD_PER_TRADE=100,
-            FETCH_DAYS=60, STATE_FILE=os.path.join(self.folder.name, 's.json'),
+            FETCH_DAYS=60, SETTLE_MINUTES=60,
+            STATE_FILE=os.path.join(self.folder.name, 's.json'),
             TRADES_FILE=os.path.join(self.folder.name, 't.csv'))
         self.sent = []
         self.errors = []
@@ -331,6 +335,9 @@ class TestRunOnce(unittest.TestCase):
 
     def flat(self, n):
         return candles([(5, 5)] * n)
+
+
+class TestRunOnce(RunOnceSetup, unittest.TestCase):
 
     def test_first_check(self):
         exchange = FakeExchange({'AAA': candles(PAIRS[:5]), 'BBB': self.flat(5)})
@@ -407,6 +414,93 @@ class TestRunOnce(unittest.TestCase):
         self.assertFalse(os.path.exists(self.settings.STATE_FILE))
 
 
+class TestSettleAndOneSummary(RunOnceSetup, unittest.TestCase):
+    MINUTE = 60_000
+
+    def test_waits_an_hour_after_the_close(self):
+        # d3 closes at 00:00 of d4. At 00:30 it isn't final yet: nothing happens
+        states = {'AAA': checked(2), 'BBB': checked(2)}
+        exchange = FakeExchange({'AAA': candles(PAIRS[:5]), 'BBB': self.flat(5)})
+        self.assertFalse(self.check(exchange, states, day(4) + 30 * self.MINUTE))
+        self.assertEqual(self.sent, [])
+        self.assertEqual(states['AAA']['last_checked'], day(2))
+        # at 01:01 it is: AAA's d3 breakout buys at d4's open
+        self.assertTrue(self.check(exchange, states, day(4) + 61 * self.MINUTE))
+        self.assertTrue(self.sent[0].startswith("📈 PAPER BUY AAA at 13.5"))
+
+    def test_exactly_one_hour_counts(self):
+        states = {'AAA': checked(2), 'BBB': checked(2)}
+        exchange = FakeExchange({'AAA': candles(PAIRS[:5]), 'BBB': self.flat(5)})
+        self.assertTrue(self.check(exchange, states, day(4) + 60 * self.MINUTE))
+
+    def test_late_coin_waits_and_only_one_summary(self):
+        # BBB has no d4 price yet: AAA buys, the summary shows BBB waiting
+        states = {}
+        late = FakeExchange({'AAA': candles(PAIRS[:5]), 'BBB': candles(PAIRS[:4])})
+        self.assertTrue(self.check(late, states, during(4)))
+        self.assertEqual(len(self.sent), 2)
+        self.assertTrue(self.sent[0].startswith("📈 PAPER BUY AAA"))
+        self.assertIn("BBB: waiting for the first price of the new day", self.sent[1])
+        self.assertIsNone(states['BBB']['last_checked'])
+        # 15 minutes later BBB's d4 price is there: BBB buys, NO second summary
+        self.sent.clear()
+        ready = FakeExchange({'AAA': candles(PAIRS[:5]), 'BBB': candles(PAIRS[:5])})
+        self.assertTrue(self.check(ready, states, during(4) + 15 * self.MINUTE))
+        self.assertEqual(len(self.sent), 1)
+        self.assertTrue(self.sent[0].startswith("📈 PAPER BUY BBB"))
+
+    def test_next_day_gets_its_own_summary(self):
+        states = {}
+        exchange = FakeExchange({'AAA': candles(PAIRS[:5]), 'BBB': self.flat(5)})
+        self.check(exchange, states, during(4))
+        self.sent.clear()
+        exchange = FakeExchange({'AAA': candles(PAIRS[:6]), 'BBB': self.flat(6)})
+        self.check(exchange, states, during(5))
+        self.assertEqual(len(self.sent), 1)
+        self.assertTrue(self.sent[0].startswith("📊 Trend paper"))
+
+    def test_summary_day_is_saved(self):
+        # the summary for the d3 close (2026-01-04) is remembered across restarts
+        states = {}
+        exchange = FakeExchange({'AAA': candles(PAIRS[:5]), 'BBB': self.flat(5)})
+        self.check(exchange, states, during(4))
+        with open(self.settings.STATE_FILE) as f:
+            self.assertEqual(json.load(f)[SUMMARY_KEY], '2026-01-04')
+
+    def test_restart_does_not_resend(self):
+        # restarted after the summary went out, with BBB still to process
+        states = {SUMMARY_KEY: '2026-01-04', 'AAA': checked(3), 'BBB': checked(2)}
+        exchange = FakeExchange({'AAA': candles(PAIRS[:5]), 'BBB': self.flat(5)})
+        self.assertTrue(self.check(exchange, states, during(4)))
+        self.assertEqual(self.sent, [])
+
+    def test_catch_up_inside_the_wait_keeps_the_real_summary(self):
+        # restarted at 00:30 of d4 after being off: d2 is caught up now (its
+        # summary is for 2026-01-03); d3 isn't final until 01:00 and must still
+        # get its own summary then
+        states = {'AAA': checked(1), 'BBB': checked(1)}
+        exchange = FakeExchange({'AAA': candles(PAIRS[:5]), 'BBB': self.flat(5)})
+        self.check(exchange, states, day(4) + 30 * self.MINUTE)
+        self.assertEqual(states[SUMMARY_KEY], '2026-01-03')
+        self.check(exchange, states, day(4) + 61 * self.MINUTE)
+        summaries = [m for m in self.sent if m.startswith("📊")]
+        self.assertEqual(len(summaries), 2)
+        self.assertEqual(states[SUMMARY_KEY], '2026-01-04')
+
+    def test_summary_day_is_the_newest_of_all_coins(self):
+        # AAA's data stops at d2 (stale), BBB is up to date: the day is d3's
+        exchange = FakeExchange({'AAA': candles(PAIRS[:3]), 'BBB': self.flat(5)})
+        states = {}
+        self.check(exchange, states, during(4))
+        self.assertEqual(states[SUMMARY_KEY], '2026-01-04')
+
+    def test_coin_with_no_closed_candles(self):
+        # BBB's only candle is today's (d4), still forming: nothing closed yet
+        exchange = FakeExchange({'AAA': candles(PAIRS[:5]), 'BBB': [[day(4), 5, 5, 5, 5, 1]]})
+        self.check(exchange, {}, during(4))
+        self.assertIn("BBB: no closed daily candles yet", self.sent[-1])
+
+
 class TestLoadStates(unittest.TestCase):
     def test_no_file(self):
         states = main_trend.load_states('does_not_exist.json', ['CRV', 'BTC'])
@@ -421,6 +515,14 @@ class TestLoadStates(unittest.TestCase):
             states = main_trend.load_states(path, ['CRV', 'BTC'])
         self.assertEqual(states['CRV'], saved['CRV'])
         self.assertEqual(states['BTC'], new_coin_state())
+
+    def test_keeps_the_summary_day(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, 's.json')
+            with open(path, 'w') as f:
+                json.dump({SUMMARY_KEY: '2026-11-05'}, f)
+            states = main_trend.load_states(path, ['CRV'])
+        self.assertEqual(states[SUMMARY_KEY], '2026-11-05')
 
 
 class TestMainStartup(unittest.TestCase):
@@ -441,6 +543,7 @@ class TestConfig(unittest.TestCase):
         self.assertEqual((trend_config.ENTRY_DAYS, trend_config.EXIT_DAYS), (20, 10))
         self.assertEqual(trend_config.FEES, (0.0038, 0.0038))
         self.assertEqual(trend_config.EXCHANGE, 'coinbase')
+        self.assertEqual(trend_config.SETTLE_MINUTES, 60)
         # enough candles for the 20-day rule plus a few weeks of catching up
         self.assertGreaterEqual(trend_config.FETCH_DAYS, trend_config.ENTRY_DAYS + 30)
 

@@ -178,20 +178,34 @@ def summary_message(lines, profits):
     return "\n".join([header] + lines)
 
 
+SUMMARY_KEY = '_summary_day'   # in the state file: the last day a summary went out
+
+
 async def run_once(exchange, states, now_ms, alert, settings, log_error=print):
     """One check of every coin. Returns True if any coin checked a new day.
 
     exchange: ccxt exchange (only fetch_ohlcv is used: public prices)
     states:   {coin: state}, changed in place and saved to STATE_FILE
+              (also holds SUMMARY_KEY, the last day summarized)
     alert:    async function that sends one Telegram message
     settings: trend_config (or anything with the same names)
 
+    A daily candle only counts as closed SETTLE_MINUTES after it ends, so
+    Coinbase has finished its closing price (right after 00:00 UTC the
+    last close can still change).
+
     A coin whose prices can't be fetched is skipped this time (logged) and
-    tried again next check; the others carry on. When at least one coin
-    checked a new day, the summary goes out once for all coins.
+    tried again next check; the others carry on.
+
+    The summary goes out ONCE per day: the first check that processes a new
+    day sends it. A coin that isn't ready yet (no first price of the new day
+    to fill at) shows as waiting, and is processed on a later check; any
+    buy or sell it makes then still gets its own alert.
     """
     import ccxt
+    decide_ms = now_ms - settings.SETTLE_MINUTES * 60_000
     advanced = False
+    newest_day = None
     lines = []
     for coin in settings.COINS:
         state = states.setdefault(coin, new_coin_state())
@@ -202,7 +216,7 @@ async def run_once(exchange, states, now_ms, alert, settings, log_error=print):
             lines.append(f"{coin}: no prices this time ({type(e).__name__})")
             continue
         before = state['last_checked']
-        new_state, events = process_coin(coin, state, candles, now_ms, settings.ENTRY_DAYS,
+        new_state, events = process_coin(coin, state, candles, decide_ms, settings.ENTRY_DAYS,
                                          settings.EXIT_DAYS, settings.FEES,
                                          settings.USD_PER_TRADE)
         states[coin] = new_state
@@ -214,9 +228,18 @@ async def run_once(exchange, states, now_ms, alert, settings, log_error=print):
             if event['action'] == 'sell':
                 append_trade(settings.TRADES_FILE, event)
             await alert(event_message(event))
-        closed, _ = split_candles(candles, now_ms)
-        lines.append(coin_line(coin, new_state, [c[4] for c in closed], settings.ENTRY_DAYS,
-                               settings.EXIT_DAYS, settings.FEES, settings.USD_PER_TRADE))
-    if advanced:
+        closed, _ = split_candles(candles, decide_ms)
+        if not closed:
+            lines.append(f"{coin}: no closed daily candles yet")
+            continue
+        newest_day = max(newest_day or 0, closed[-1][0])
+        if new_state['last_checked'] != closed[-1][0]:
+            lines.append(f"{coin}: waiting for the first price of the new day")
+        else:
+            lines.append(coin_line(coin, new_state, [c[4] for c in closed], settings.ENTRY_DAYS,
+                                   settings.EXIT_DAYS, settings.FEES, settings.USD_PER_TRADE))
+    if advanced and newest_day is not None and states.get(SUMMARY_KEY) != day_text(newest_day):
+        states[SUMMARY_KEY] = day_text(newest_day)
+        save_grid_state(states, settings.STATE_FILE)
         await alert(summary_message(lines, read_profits(settings.TRADES_FILE)))
     return advanced

@@ -16,6 +16,9 @@ USD_PER_TRADE = 100     # paper dollars per buy, per coin
 FEES = (0.0038, 0.0038) # Kraken taker, buy and sell (same as the backtest)
 
 CHECK_MINUTES = 15      # how often it looks for a newly closed daily candle
+SETTLE_MINUTES = 60     # wait this long after the daily close (00:00 UTC) before
+                        # deciding, so Coinbase has finished the closing price:
+                        # decisions and the summary come at ~8 PM EST / 9 PM EDT
 FETCH_DAYS = 60         # daily candles fetched per check (enough to catch up
                         # after being off for a few weeks)
 

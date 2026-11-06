@@ -2,9 +2,10 @@
 
 Reads public Coinbase prices, places NO orders, needs no API keys.
 Every CHECK_MINUTES it looks for a newly closed daily candle (they close
-at 00:00 UTC = 7 PM EST / 8 PM EDT). When one closes it decides buy / sell
-/ nothing per coin, records paper trades, and sends Telegram alerts plus a
-summary. Safe to restart: positions are saved in trend_paper_state.json.
+at 00:00 UTC = 7 PM EST / 8 PM EDT, and it waits SETTLE_MINUTES more so the
+closing prices are final). Then it decides buy / sell / nothing per coin,
+records paper trades, and sends Telegram alerts plus one summary a day.
+Safe to restart: positions are saved in trend_paper_state.json.
 
 Run: python main_trend.py   (or start_trend.bat). Ctrl+C to stop.
 """
