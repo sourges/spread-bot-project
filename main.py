@@ -14,6 +14,13 @@ SELL_PRICE = 1.0000
 AMOUNT = 5008.20           # coins per trade
 COMPOUND = True         # True: add total profit to each new buy. False: always AMOUNT.
 CHECK_INTERVAL = 60     # seconds between checks
+# Post-only: orders never fill as a taker. If Kraken rejects one (market already
+# past our price), try again every CHECK_INTERVAL, TRIES_PER_PRICE times, then step
+# one STEP further (sell up, buy down). A stepped order goes back to its normal
+# price once that's possible again, checked every MOVE_BACK_EVERY seconds.
+STEP = 0.0001
+TRIES_PER_PRICE = 5
+MOVE_BACK_EVERY = 3600  # 1 hour
 # =====================================================
 
 # Get credentials from .env (spread bot has its own Kraken key)
@@ -90,7 +97,10 @@ async def main():
         telegram_token=TELEGRAM_TOKEN,
         chat_id=CHAT_ID,
         check_interval=CHECK_INTERVAL,
-        compound=COMPOUND
+        compound=COMPOUND,
+        step=STEP,
+        tries_per_price=TRIES_PER_PRICE,
+        move_back_every=MOVE_BACK_EVERY
     )
 
     coin = PAIR.split('/')[0]
@@ -99,6 +109,8 @@ async def main():
     print(f"   Buy price: {BUY_PRICE}")
     print(f"   Sell price: {SELL_PRICE}")
     print(f"   Amount per trade: {AMOUNT} {coin}")
+    print(f"   Post-only: {TRIES_PER_PRICE} tries per price, then step {STEP}; "
+          f"back to normal checked every {MOVE_BACK_EVERY // 60} min")
     if COMPOUND:
         print(f"   Compound: ON (next buy {bot.buy_amount()} {coin}, "
               f"AMOUNT + ${bot.total_profit:.4f} profit)")
